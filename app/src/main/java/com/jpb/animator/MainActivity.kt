@@ -1,10 +1,14 @@
 package com.jpb.animator
 
+import android.graphics.Bitmap
+import android.net.Uri
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -29,11 +33,12 @@ import androidx.compose.ui.unit.sp
 import com.jpb.animator.ui.components.DrawingCanvas
 import com.jpb.animator.ui.theme.AnimatorTheme
 import com.jpb.animator.utils.exportAnimationNative
-import com.jpb.animator.utils.saveIndividualFrame
+import com.jpb.animator.utils.renderFrameToBitmap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 
 // Represents a single frame containing its drawn paths
 data class AnimationFrame(
@@ -101,21 +106,77 @@ fun EditorScreen(
             Text("My Animation", color = Color.White, fontSize = 20.sp)
             val coroutineScope = rememberCoroutineScope()
             val context = LocalContext.current
-            Column() {
-                Button(onClick = {
+            val createVideoLauncher = rememberLauncherForActivityResult(
+                contract = ActivityResultContracts.CreateDocument("video/mp4")
+            ) { uri: Uri? ->
+                if (uri != null) {
+                    Toast.makeText(context, "Exporting video...", Toast.LENGTH_SHORT).show()
+
                     coroutineScope.launch(Dispatchers.IO) {
-                        val currentFrame = frames.getOrNull(currentFrameIndex)
-                        if (currentFrame != null) {
-                            val savedFile = saveIndividualFrame(context, currentFrame, currentFrameIndex)
+                        try {
+                            // 1. Run the native video export helper
+                            val exportResult = exportAnimationNative(context, frames)
+
+                            if (exportResult.first) {
+                                val generatedFile = File(exportResult.second)
+
+                                // 2. Copy the generated MP4 file bytes into the user-selected SAF Uri stream
+                                context.contentResolver.openOutputStream(uri)?.use { outputStream ->
+                                    generatedFile.inputStream().use { inputStream ->
+                                        inputStream.copyTo(outputStream)
+                                    }
+                                }
+
+                                withContext(Dispatchers.Main) {
+                                    Toast.makeText(context, "Video exported successfully!", Toast.LENGTH_LONG).show()
+                                }
+                            } else {
+                                withContext(Dispatchers.Main) {
+                                    Toast.makeText(context, "Export failed: ${exportResult.second}", Toast.LENGTH_LONG).show()
+                                }
+                            }
+                        } catch (e: Exception) {
                             withContext(Dispatchers.Main) {
-                                Toast.makeText(
-                                    context,
-                                    "Frame ${currentFrameIndex + 1} saved to:\n${savedFile.absolutePath}",
-                                    Toast.LENGTH_LONG
-                                ).show()
+                                Toast.makeText(context, "Export failed: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
                             }
                         }
                     }
+                }
+            }
+            var pendingFrameIndex by remember { mutableStateOf<Int?>(null) }
+
+            val saveSingleFrameLauncher = rememberLauncherForActivityResult(
+                contract = ActivityResultContracts.CreateDocument("image/png")
+            ) { uri: Uri? ->
+                val indexToSave = pendingFrameIndex
+                if (uri != null && indexToSave != null) {
+                    val frameToSave = frames.getOrNull(indexToSave)
+                    if (frameToSave != null) {
+                        Toast.makeText(context, "Saving frame...", Toast.LENGTH_SHORT).show()
+
+                        coroutineScope.launch(Dispatchers.IO) {
+                            try {
+                                context.contentResolver.openOutputStream(uri)?.use { outputStream ->
+                                    val bitmap = renderFrameToBitmap(frameToSave) // Your rendering helper
+                                    bitmap.compress(Bitmap.CompressFormat.PNG, 100, outputStream)
+                                }
+                                withContext(Dispatchers.Main) {
+                                    Toast.makeText(context, "Frame successfully saved!", Toast.LENGTH_LONG).show()
+                                }
+                            } catch (e: Exception) {
+                                withContext(Dispatchers.Main) {
+                                    Toast.makeText(context, "Failed to save frame: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
+                                }
+                            }
+                        }
+                    }
+                }
+                pendingFrameIndex = null
+            }
+            Column() {
+                Button(onClick = {
+                    pendingFrameIndex = currentFrameIndex
+                    saveSingleFrameLauncher.launch("Frame_${currentFrameIndex + 1}.png")
                 }) {
                     Text("Save current frame")
                 }
@@ -124,15 +185,7 @@ fun EditorScreen(
                     Toast.makeText(context, "Rendering video...", Toast.LENGTH_SHORT).show()
 
                     coroutineScope.launch {
-                        val result = withContext(Dispatchers.IO) {
-                            exportAnimationNative(context, frames)
-                        }
-
-                        if (result.first) {
-                            Toast.makeText(context, "Saved to: ${result.second}", Toast.LENGTH_LONG).show()
-                        } else {
-                            Toast.makeText(context, "Export failed: ${result.second}", Toast.LENGTH_LONG).show()
-                        }
+                        createVideoLauncher.launch("MyAnimation.mp4")
                     }
                 }) {
                     Text("Export")

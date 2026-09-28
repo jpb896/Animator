@@ -48,9 +48,13 @@ fun exportAnimationNative(
 
         var trackIndex = -1
         val bufferInfo = MediaCodec.BufferInfo()
+        val frameIntervalMs = 1000L / fps
 
-        // Draw and feed each frame onto the encoder surface
+        // Draw and feed each frame onto the encoder surface with real-world pacing
         for (i in frames.indices) {
+            // Drain any pending output buffers before feeding the next frame
+            trackIndex = drainEncoderCompletely(codec, muxer, bufferInfo, trackIndex, { muxerStarted }, { muxerStarted = true })
+
             val canvas = surface.lockCanvas(null)
             try {
                 canvas.drawColor(AndroidColor.WHITE)
@@ -68,21 +72,44 @@ fun exportAnimationNative(
                 surface.unlockCanvasAndPost(canvas)
             }
 
-            // Drain any available output from the encoder
-            trackIndex = drainEncoder(codec, muxer, bufferInfo, trackIndex, { muxerStarted }, { muxerStarted = true }, false)
+            // Pace frames so GraphicBufferSource registers correct timestamps
+            try {
+                Thread.sleep(frameIntervalMs)
+            } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
+                break
+            }
         }
 
-        // Signal the end of the stream and finish draining
+        // Signal the end of the stream
         codec.signalEndOfInputStream()
 
-        var drainTimeout = 0
-        while (drainTimeout < 10) {
-            trackIndex = drainEncoder(codec, muxer, bufferInfo, trackIndex, { muxerStarted }, { muxerStarted = true }, true)
-            if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) break
-            drainTimeout++
+        // Continue draining until EOS chunk is received from the encoder
+        var sawEos = false
+        val startWaitTime = System.currentTimeMillis()
+        while (!sawEos && (System.currentTimeMillis() - startWaitTime < 5000)) {
+            val outputBufferId = codec.dequeueOutputBuffer(bufferInfo, 10_000L)
+            if (outputBufferId == MediaCodec.INFO_TRY_AGAIN_LATER) {
+                continue
+            } else if (outputBufferId == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                check(!muxerStarted) { "Format changed twice." }
+                trackIndex = muxer.addTrack(codec.outputFormat)
+                muxer.start()
+                muxerStarted = true
+            } else if (outputBufferId >= 0) {
+                val encodedData = codec.getOutputBuffer(outputBufferId)
+                if (encodedData != null && bufferInfo.size != 0 && muxerStarted) {
+                    encodedData.position(bufferInfo.offset)
+                    encodedData.limit(bufferInfo.offset + bufferInfo.size)
+                    muxer.writeSampleData(trackIndex, encodedData, bufferInfo)
+                }
+                codec.releaseOutputBuffer(outputBufferId, false)
+                if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
+                    sawEos = true
+                }
+            }
         }
 
-        // Safely stop components only if the muxer started successfully
         if (muxerStarted) {
             muxer.stop()
         }
@@ -105,45 +132,39 @@ fun exportAnimationNative(
     }
 }
 
-private fun drainEncoder(
+private fun drainEncoderCompletely(
     codec: MediaCodec,
     muxer: MediaMuxer,
     bufferInfo: MediaCodec.BufferInfo,
     initialTrackIndex: Int,
     isMuxerStarted: () -> Boolean,
-    setMuxerStarted: (Boolean) -> Unit,
-    endOfStream: Boolean
+    setMuxerStarted: (Boolean) -> Unit
 ): Int {
     var trackIndex = initialTrackIndex
-    val timeoutUs = 10_000L
-
-    val outputBufferId = codec.dequeueOutputBuffer(bufferInfo, timeoutUs)
-    if (outputBufferId == MediaCodec.INFO_TRY_AGAIN_LATER) {
-        // No output available yet
-    } else if (outputBufferId == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-        check(!isMuxerStarted()) { "Format changed twice." }
-        val newFormat = codec.outputFormat
-        trackIndex = muxer.addTrack(newFormat)
-        muxer.start()
-        setMuxerStarted(true)
-    } else if (outputBufferId < 0) {
-        // Ignore other status codes
-    } else {
-        val encodedData = codec.getOutputBuffer(outputBufferId)
-        if (encodedData != null) {
-            if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) {
-                bufferInfo.size = 0
-            }
-
-            if (bufferInfo.size != 0) {
-                if (isMuxerStarted()) {
+    while (true) {
+        val outputBufferId = codec.dequeueOutputBuffer(bufferInfo, 0L)
+        if (outputBufferId == MediaCodec.INFO_TRY_AGAIN_LATER) {
+            break
+        } else if (outputBufferId == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+            check(!isMuxerStarted()) { "Format changed twice." }
+            trackIndex = muxer.addTrack(codec.outputFormat)
+            muxer.start()
+            setMuxerStarted(true)
+        } else if (outputBufferId < 0) {
+            // Ignore other status codes
+        } else {
+            val encodedData = codec.getOutputBuffer(outputBufferId)
+            if (encodedData != null) {
+                if (bufferInfo.size != 0 && isMuxerStarted()) {
                     encodedData.position(bufferInfo.offset)
                     encodedData.limit(bufferInfo.offset + bufferInfo.size)
                     muxer.writeSampleData(trackIndex, encodedData, bufferInfo)
                 }
+                codec.releaseOutputBuffer(outputBufferId, false)
             }
-
-            codec.releaseOutputBuffer(outputBufferId, false)
+            if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
+                break
+            }
         }
     }
     return trackIndex
