@@ -4,9 +4,11 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -16,9 +18,19 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.jpb.animator.ui.components.DrawingCanvas
 import com.jpb.animator.ui.theme.AnimatorTheme
+
+// Represents a single frame containing its drawn paths
+data class AnimationFrame(
+    val paths: List<Path> = emptyList()
+)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -26,20 +38,37 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             AnimatorTheme {
-                // Manage state for frames and current selection
+                // State for frames and current selection
+                var frames by remember { mutableStateOf(listOf(AnimationFrame())) }
                 var currentFrameIndex by remember { mutableStateOf(0) }
-                // For now, let's track a list of frame counts or data structures
-                var totalFrames by remember { mutableStateOf(1) }
+
+                // Track the path currently being drawn with a finger/stylus
+                var currentPath by remember { mutableStateOf<Path?>(null) }
 
                 EditorScreen(
                     currentFrameIndex = currentFrameIndex,
-                    totalFrames = totalFrames,
+                    frames = frames,
+                    currentPath = currentPath,
+                    onPathAdded = { newPath ->
+                        // Add the finished path to the current frame's path list
+                        val updatedFrames = frames.toMutableList()
+                        val currentFrame = updatedFrames[currentFrameIndex]
+                        updatedFrames[currentFrameIndex] = currentFrame.copy(
+                            paths = currentFrame.paths + newPath
+                        )
+                        frames = updatedFrames
+                    },
+                    onCurrentPathChanged = { path ->
+                        currentPath = path
+                    },
                     onAddFrame = {
-                        totalFrames++
-                        currentFrameIndex = totalFrames - 1 // Switch to the new frame
+                        // Add a brand new empty frame and switch to it
+                        frames = frames + AnimationFrame()
+                        currentFrameIndex = frames.size - 1
                     },
                     onSelectFrame = { index ->
                         currentFrameIndex = index
+                        currentPath = null // Reset current drawing path on switch
                     }
                 )
             }
@@ -50,7 +79,10 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun EditorScreen(
     currentFrameIndex: Int,
-    totalFrames: Int,
+    frames: List<AnimationFrame>,
+    currentPath: Path?,
+    onPathAdded: (Path) -> Unit,
+    onCurrentPathChanged: (Path?) -> Unit,
     onAddFrame: () -> Unit,
     onSelectFrame: (Int) -> Unit
 ) {
@@ -58,7 +90,7 @@ fun EditorScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.DarkGray)
-            .statusBarsPadding() // Ensures content doesn't hide behind system status bar
+            .statusBarsPadding()
     ) {
         // 1. Top Bar
         Row(
@@ -81,8 +113,15 @@ fun EditorScreen(
                 .fillMaxWidth()
                 .background(Color.White)
         ) {
+            val currentPaths = frames.getOrNull(currentFrameIndex)?.paths ?: emptyList()
+
+            DrawingCanvas(
+                paths = currentPaths,
+                onPathAdded = onPathAdded
+            )
+
             Text(
-                text = "Frame ${currentFrameIndex + 1}",
+                text = "Frame ${currentFrameIndex + 1} / ${frames.size}",
                 modifier = Modifier
                     .align(Alignment.TopStart)
                     .padding(8.dp),
@@ -100,7 +139,7 @@ fun EditorScreen(
             contentPadding = PaddingValues(8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            items(totalFrames) { index ->
+            items(frames.size) { index ->
                 FrameThumbnailItem(
                     index = index,
                     isSelected = index == currentFrameIndex,
