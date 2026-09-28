@@ -7,7 +7,6 @@ import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.media.MediaMuxer
 import androidx.compose.ui.graphics.asAndroidPath
-import com.jpb.animator.AnimationFrame
 import java.io.File
 
 fun exportAnimationNative(
@@ -58,15 +57,26 @@ fun exportAnimationNative(
             val canvas = surface.lockCanvas(null)
             try {
                 canvas.drawColor(AndroidColor.WHITE)
-                val paint = android.graphics.Paint().apply {
-                    color = AndroidColor.BLACK
-                    strokeWidth = 8f
-                    style = android.graphics.Paint.Style.STROKE
-                    strokeCap = android.graphics.Paint.Cap.ROUND
-                    isAntiAlias = true
-                }
-                frames[i].paths.forEach { composePath ->
-                    canvas.drawPath(composePath.asAndroidPath(), paint)
+
+                // Draw each styled path with its correct color, width, and style
+                frames[i].paths.forEach { styledPath ->
+                    val paint = android.graphics.Paint().apply {
+                        strokeWidth = styledPath.strokeWidth
+                        style = if (styledPath.drawStyle == DrawStyle.FILL) {
+                            android.graphics.Paint.Style.FILL
+                        } else {
+                            android.graphics.Paint.Style.STROKE
+                        }
+                        strokeCap = android.graphics.Paint.Cap.ROUND
+                        isAntiAlias = true
+                        color = AndroidColor.argb(
+                            styledPath.color.alpha,
+                            styledPath.color.red,
+                            styledPath.color.green,
+                            styledPath.color.blue
+                        )
+                    }
+                    canvas.drawPath(styledPath.path.asAndroidPath(), paint)
                 }
             } finally {
                 surface.unlockCanvasAndPost(canvas)

@@ -9,11 +9,9 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -23,27 +21,21 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.jpb.animator.ui.components.DrawingCanvas
+import com.jpb.animator.ui.components.PaletteToolbar
 import com.jpb.animator.ui.theme.AnimatorTheme
+import com.jpb.animator.utils.AnimationFrame
+import com.jpb.animator.utils.DrawingToolState
+import com.jpb.animator.utils.StyledPath
 import com.jpb.animator.utils.exportAnimationNative
 import com.jpb.animator.utils.renderFrameToBitmap
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
-
-// Represents a single frame containing its drawn paths
-data class AnimationFrame(
-    val paths: List<Path> = emptyList()
-)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -51,25 +43,23 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             AnimatorTheme {
-                // State for frames and current selection
                 var frames by remember { mutableStateOf(listOf(AnimationFrame())) }
-                var currentFrameIndex by remember { mutableStateOf(0) }
-
-                // Track the path currently being drawn with a finger/stylus
-                var currentPath by remember { mutableStateOf<Path?>(null) }
+                var currentFrameIndex by remember { mutableIntStateOf(0) }
+                var toolState by remember { mutableStateOf(DrawingToolState()) }
 
                 EditorScreen(
                     currentFrameIndex = currentFrameIndex,
                     frames = frames,
-                    onPathAdded = { newPath ->
-                        // Add path to the current frame
-                        val updatedPaths = frames[currentFrameIndex].paths + newPath
+                    toolState = toolState,
+                    onToolStateChanged = { newToolState -> toolState = newToolState },
+                    onPathAdded = { newStyledPath ->
+                        val updatedPaths = frames[currentFrameIndex].paths + newStyledPath
                         frames = frames.toMutableList().apply {
                             this[currentFrameIndex] = this[currentFrameIndex].copy(paths = updatedPaths)
                         }
                     },
                     onAddFrame = {
-                        frames = frames + AnimationFrame(paths = emptyList())
+                        frames += AnimationFrame(paths = emptyList())
                         currentFrameIndex = frames.size - 1
                     },
                     onSelectFrame = { index ->
@@ -85,7 +75,9 @@ class MainActivity : ComponentActivity() {
 fun EditorScreen(
     currentFrameIndex: Int,
     frames: List<AnimationFrame>,
-    onPathAdded: (Path) -> Unit,
+    toolState: DrawingToolState,
+    onToolStateChanged: (DrawingToolState) -> Unit,
+    onPathAdded: (StyledPath) -> Unit,
     onAddFrame: () -> Unit,
     onSelectFrame: (Int) -> Unit
 ) {
@@ -99,7 +91,7 @@ fun EditorScreen(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(4.dp),
+                .padding(8.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -114,13 +106,10 @@ fun EditorScreen(
 
                     coroutineScope.launch(Dispatchers.IO) {
                         try {
-                            // 1. Run the native video export helper
                             val exportResult = exportAnimationNative(context, frames)
 
                             if (exportResult.first) {
                                 val generatedFile = File(exportResult.second)
-
-                                // 2. Copy the generated MP4 file bytes into the user-selected SAF Uri stream
                                 context.contentResolver.openOutputStream(uri)?.use { outputStream ->
                                     generatedFile.inputStream().use { inputStream ->
                                         inputStream.copyTo(outputStream)
@@ -157,7 +146,7 @@ fun EditorScreen(
                         coroutineScope.launch(Dispatchers.IO) {
                             try {
                                 context.contentResolver.openOutputStream(uri)?.use { outputStream ->
-                                    val bitmap = renderFrameToBitmap(frameToSave) // Your rendering helper
+                                    val bitmap = renderFrameToBitmap(frameToSave)
                                     bitmap.compress(Bitmap.CompressFormat.PNG, 100, outputStream)
                                 }
                                 withContext(Dispatchers.Main) {
@@ -173,17 +162,17 @@ fun EditorScreen(
                 }
                 pendingFrameIndex = null
             }
-            Column() {
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = {
                     pendingFrameIndex = currentFrameIndex
                     saveSingleFrameLauncher.launch("Frame_${currentFrameIndex + 1}.png")
                 }) {
-                    Text("Save current frame")
+                    Text("Save Frame")
                 }
 
                 Button(onClick = {
                     Toast.makeText(context, "Rendering video...", Toast.LENGTH_SHORT).show()
-
                     coroutineScope.launch {
                         createVideoLauncher.launch("MyAnimation.mp4")
                     }
@@ -200,15 +189,22 @@ fun EditorScreen(
                 .fillMaxWidth()
                 .background(Color.White)
         ) {
-            val currentPaths = frames.getOrNull(currentFrameIndex)?.paths ?: emptyList()
+            val currentStyledPaths = frames.getOrNull(currentFrameIndex)?.paths ?: emptyList()
 
             DrawingCanvas(
-                paths = currentPaths,
+                styledPaths = currentStyledPaths,
+                toolState = toolState,
                 onPathAdded = onPathAdded
             )
         }
 
-        // 3. Timeline / Frame Bar at the bottom
+        // 3. Tool Palette Toolbar (Loaded from your separate file)
+        PaletteToolbar(
+            toolState = toolState,
+            onToolStateChanged = onToolStateChanged
+        )
+
+        // 4. Timeline / Frame Bar at the bottom
         LazyRow(
             modifier = Modifier
                 .fillMaxWidth()
@@ -226,7 +222,6 @@ fun EditorScreen(
                 )
             }
 
-            // Button to add a new frame
             item {
                 Box(
                     modifier = Modifier
