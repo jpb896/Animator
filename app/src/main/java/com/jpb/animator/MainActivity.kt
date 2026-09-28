@@ -29,6 +29,7 @@ import androidx.compose.ui.unit.sp
 import com.jpb.animator.ui.components.DrawingCanvas
 import com.jpb.animator.ui.theme.AnimatorTheme
 import com.jpb.animator.utils.exportAnimationNative
+import com.jpb.animator.utils.saveIndividualFrame
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
@@ -93,30 +94,49 @@ fun EditorScreen(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
+                .padding(4.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text("My Animation", color = Color.White, fontSize = 20.sp)
             val coroutineScope = rememberCoroutineScope()
             val context = LocalContext.current
-
-            Button(onClick = {
-                Toast.makeText(context, "Rendering video...", Toast.LENGTH_SHORT).show()
-
-                coroutineScope.launch {
-                    val result = withContext(Dispatchers.IO) {
-                        exportAnimationNative(context, frames)
+            Column() {
+                Button(onClick = {
+                    coroutineScope.launch(Dispatchers.IO) {
+                        val currentFrame = frames.getOrNull(currentFrameIndex)
+                        if (currentFrame != null) {
+                            val savedFile = saveIndividualFrame(context, currentFrame, currentFrameIndex)
+                            withContext(Dispatchers.Main) {
+                                Toast.makeText(
+                                    context,
+                                    "Frame ${currentFrameIndex + 1} saved to:\n${savedFile.absolutePath}",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
+                        }
                     }
-
-                    if (result.first) {
-                        Toast.makeText(context, "Saved to: ${result.second}", Toast.LENGTH_LONG).show()
-                    } else {
-                        Toast.makeText(context, "Export failed: ${result.second}", Toast.LENGTH_LONG).show()
-                    }
+                }) {
+                    Text("Save current frame")
                 }
-            }) {
-                Text("Export")
+
+                Button(onClick = {
+                    Toast.makeText(context, "Rendering video...", Toast.LENGTH_SHORT).show()
+
+                    coroutineScope.launch {
+                        val result = withContext(Dispatchers.IO) {
+                            exportAnimationNative(context, frames)
+                        }
+
+                        if (result.first) {
+                            Toast.makeText(context, "Saved to: ${result.second}", Toast.LENGTH_LONG).show()
+                        } else {
+                            Toast.makeText(context, "Export failed: ${result.second}", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }) {
+                    Text("Export")
+                }
             }
         }
 
