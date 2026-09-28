@@ -119,14 +119,6 @@ fun EditorScreen(
                 paths = currentPaths,
                 onPathAdded = onPathAdded
             )
-
-            Text(
-                text = "Frame ${currentFrameIndex + 1} / ${frames.size}",
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(8.dp),
-                color = Color.Gray
-            )
         }
 
         // 3. Timeline / Frame Bar at the bottom
