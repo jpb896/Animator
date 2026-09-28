@@ -7,6 +7,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
@@ -31,6 +32,9 @@ fun DrawingCanvas(
     onLayerBitmapUpdated: ((Bitmap) -> Unit)? = null
 ) {
     var currentPath by remember { mutableStateOf<Path?>(null) }
+    // 1. Keep track of points for the current stroke
+    var currentPoints by remember { mutableStateOf<MutableList<Offset>>(mutableListOf()) }
+
     var activeColor by remember { mutableStateOf(Color.Black) }
     var activeStrokeWidth by remember { mutableStateOf(8f) }
     var activeDrawStyle by remember { mutableStateOf(DrawStyle.STROKE) }
@@ -42,67 +46,15 @@ fun DrawingCanvas(
             .fillMaxSize()
             .pointerInput(toolState, currentLayerIndex) {
                 if (toolState.toolType == ToolType.FLOODFILL) {
-                    detectTapGestures(
-                        onTap = { offset ->
-                            if (currentLayer == null) return@detectTapGestures
-
-                            val width = size.width.toInt().coerceAtLeast(1)
-                            val height = size.height.toInt().coerceAtLeast(1)
-
-                            // Use existing layer bitmap or create a base bitmap from vector paths
-                            val androidBitmap = currentLayer.rasterBitmap?.copy(Bitmap.Config.ARGB_8888, true)
-                                ?: Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).apply {
-                                    val canvas = android.graphics.Canvas(this)
-                                    canvas.drawColor(android.graphics.Color.WHITE)
-                                    currentLayer.paths.forEach { styledPath ->
-                                        val paint = android.graphics.Paint().apply {
-                                            strokeWidth = styledPath.strokeWidth
-                                            style = if (styledPath.drawStyle == DrawStyle.FILL) {
-                                                android.graphics.Paint.Style.FILL
-                                            } else {
-                                                android.graphics.Paint.Style.STROKE
-                                            }
-                                            strokeCap = android.graphics.Paint.Cap.ROUND
-                                            isAntiAlias = true
-                                            color = android.graphics.Color.argb(
-                                                styledPath.color.alpha,
-                                                styledPath.color.red,
-                                                styledPath.color.green,
-                                                styledPath.color.blue
-                                            )
-                                        }
-                                        canvas.drawPath(styledPath.path.asAndroidPath(), paint)
-                                    }
-                                }
-
-                            val startX = offset.x.toInt().coerceIn(0, width - 1)
-                            val startY = offset.y.toInt().coerceIn(0, height - 1)
-                            val targetColor = androidBitmap.getPixel(startX, startY)
-
-                            val replacementColor = android.graphics.Color.argb(
-                                toolState.currentColor.alpha,
-                                toolState.currentColor.red,
-                                toolState.currentColor.green,
-                                toolState.currentColor.blue
-                            )
-
-                            // Perform bounded pixel flood fill
-                            val filledBitmap = FloodFillUtils.floodFill(
-                                androidBitmap,
-                                startX,
-                                startY,
-                                targetColor,
-                                replacementColor
-                            )
-
-                            onLayerBitmapUpdated?.invoke(filledBitmap)
-                        }
-                    )
+                    // ... (keep your flood fill tap gestures as they are) ...
                 } else {
                     detectDragGestures(
                         onDragStart = { offset ->
                             val path = Path().apply { moveTo(offset.x, offset.y) }
                             currentPath = path
+
+                            // 2. Clear/Initialize points list for the new stroke
+                            currentPoints = mutableListOf(offset)
 
                             activeStrokeWidth = toolState.strokeWidth
                             when (toolState.toolType) {
@@ -126,22 +78,28 @@ fun DrawingCanvas(
                             currentPath?.let { path ->
                                 path.lineTo(change.position.x, change.position.y)
                                 currentPath = Path().apply { addPath(path) }
+
+                                // 3. Record every dragged point
+                                currentPoints.add(change.position)
                             }
                         },
                         onDragEnd = {
                             currentPath?.let { path ->
                                 val newStyledPath = StyledPath(
-                                    path = path,
+                                    rawPath = path,
+                                    rawPoints = currentPoints, // 4. Pass the collected points here!
                                     color = activeColor,
                                     strokeWidth = activeStrokeWidth,
                                     drawStyle = activeDrawStyle
                                 )
                                 onPathAddedToActiveLayer(newStyledPath)
                                 currentPath = null
+                                currentPoints = mutableListOf()
                             }
                         },
                         onDragCancel = {
                             currentPath = null
+                            currentPoints = mutableListOf()
                         }
                     )
                 }
