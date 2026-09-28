@@ -51,38 +51,40 @@ fun exportAnimationNative(
 
         // Draw and feed each frame onto the encoder surface with real-world pacing
         for (i in frames.indices) {
-            // Drain any pending output buffers before feeding the next frame
             trackIndex = drainEncoderCompletely(codec, muxer, bufferInfo, trackIndex, { muxerStarted }, { muxerStarted = true })
 
             val canvas = surface.lockCanvas(null)
             try {
                 canvas.drawColor(AndroidColor.WHITE)
 
-                // Draw each styled path with its correct color, width, and style
-                frames[i].paths.forEach { styledPath ->
-                    val paint = android.graphics.Paint().apply {
-                        strokeWidth = styledPath.strokeWidth
-                        style = if (styledPath.drawStyle == DrawStyle.FILL) {
-                            android.graphics.Paint.Style.FILL
-                        } else {
-                            android.graphics.Paint.Style.STROKE
+                // Loop through layers instead of paths directly
+                frames[i].layers.forEach { layer ->
+                    if (layer.isVisible) {
+                        layer.paths.forEach { styledPath ->
+                            val paint = android.graphics.Paint().apply {
+                                strokeWidth = styledPath.strokeWidth
+                                style = if (styledPath.drawStyle == DrawStyle.FILL) {
+                                    android.graphics.Paint.Style.FILL
+                                } else {
+                                    android.graphics.Paint.Style.STROKE
+                                }
+                                strokeCap = android.graphics.Paint.Cap.ROUND
+                                isAntiAlias = true
+                                color = AndroidColor.argb(
+                                    styledPath.color.alpha,
+                                    styledPath.color.red,
+                                    styledPath.color.green,
+                                    styledPath.color.blue
+                                )
+                            }
+                            canvas.drawPath(styledPath.path.asAndroidPath(), paint)
                         }
-                        strokeCap = android.graphics.Paint.Cap.ROUND
-                        isAntiAlias = true
-                        color = AndroidColor.argb(
-                            styledPath.color.alpha,
-                            styledPath.color.red,
-                            styledPath.color.green,
-                            styledPath.color.blue
-                        )
                     }
-                    canvas.drawPath(styledPath.path.asAndroidPath(), paint)
                 }
             } finally {
                 surface.unlockCanvasAndPost(canvas)
             }
 
-            // Pace frames so GraphicBufferSource registers correct timestamps
             try {
                 Thread.sleep(frameIntervalMs)
             } catch (e: InterruptedException) {

@@ -29,6 +29,7 @@ import com.jpb.animator.ui.components.PaletteToolbar
 import com.jpb.animator.ui.theme.AnimatorTheme
 import com.jpb.animator.utils.AnimationFrame
 import com.jpb.animator.utils.DrawingToolState
+import com.jpb.animator.utils.Layer
 import com.jpb.animator.utils.StyledPath
 import com.jpb.animator.utils.exportAnimationNative
 import com.jpb.animator.utils.renderFrameToBitmap
@@ -45,25 +46,47 @@ class MainActivity : ComponentActivity() {
             AnimatorTheme {
                 var frames by remember { mutableStateOf(listOf(AnimationFrame())) }
                 var currentFrameIndex by remember { mutableIntStateOf(0) }
+                var currentLayerIndex by remember { mutableIntStateOf(0) }
                 var toolState by remember { mutableStateOf(DrawingToolState()) }
 
                 EditorScreen(
                     currentFrameIndex = currentFrameIndex,
+                    currentLayerIndex = currentLayerIndex,
                     frames = frames,
                     toolState = toolState,
                     onToolStateChanged = { newToolState -> toolState = newToolState },
                     onPathAdded = { newStyledPath ->
-                        val updatedPaths = frames[currentFrameIndex].paths + newStyledPath
+                        val frame = frames[currentFrameIndex]
+                        val updatedLayers = frame.layers.toMutableList()
+                        val targetLayer = updatedLayers.getOrElse(currentLayerIndex) { updatedLayers.first() }
+
+                        val newLayerPaths = targetLayer.paths + newStyledPath
+                        updatedLayers[currentLayerIndex] = targetLayer.copy(paths = newLayerPaths)
+
                         frames = frames.toMutableList().apply {
-                            this[currentFrameIndex] = this[currentFrameIndex].copy(paths = updatedPaths)
+                            this[currentFrameIndex] = frame.copy(layers = updatedLayers)
                         }
                     },
                     onAddFrame = {
-                        frames += AnimationFrame(paths = emptyList())
+                        frames += AnimationFrame(layers = listOf(Layer(name = "Layer 1")))
                         currentFrameIndex = frames.size - 1
+                        currentLayerIndex = 0
                     },
                     onSelectFrame = { index ->
                         currentFrameIndex = index
+                        currentLayerIndex = 0
+                    },
+                    onAddLayer = {
+                        val frame = frames[currentFrameIndex]
+                        val newLayerName = "Layer ${frame.layers.size + 1}"
+                        val updatedLayers = frame.layers + Layer(name = newLayerName)
+                        frames = frames.toMutableList().apply {
+                            this[currentFrameIndex] = frame.copy(layers = updatedLayers)
+                        }
+                        currentLayerIndex = updatedLayers.size - 1
+                    },
+                    onSelectLayer = { index ->
+                        currentLayerIndex = index
                     }
                 )
             }
@@ -74,12 +97,15 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun EditorScreen(
     currentFrameIndex: Int,
+    currentLayerIndex: Int,
     frames: List<AnimationFrame>,
     toolState: DrawingToolState,
     onToolStateChanged: (DrawingToolState) -> Unit,
     onPathAdded: (StyledPath) -> Unit,
     onAddFrame: () -> Unit,
-    onSelectFrame: (Int) -> Unit
+    onSelectFrame: (Int) -> Unit,
+    onAddLayer: () -> Unit,
+    onSelectLayer: (Int) -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -182,6 +208,39 @@ fun EditorScreen(
             }
         }
 
+        // Layer selection mini-bar
+        val currentLayers = frames.getOrNull(currentFrameIndex)?.layers ?: emptyList()
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Color.Black.copy(alpha = 0.5f))
+                .padding(horizontal = 8.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("Layers:", color = Color.White, fontSize = 14.sp)
+            LazyRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.weight(1f)
+            ) {
+                items(currentLayers.size) { layerIndex ->
+                    val isLayerSelected = layerIndex == currentLayerIndex
+                    Button(
+                        onClick = { onSelectLayer(layerIndex) },
+                        colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                            containerColor = if (isLayerSelected) Color.Cyan else Color.Gray
+                        ),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                    ) {
+                        Text(currentLayers[layerIndex].name, color = if (isLayerSelected) Color.Black else Color.White, fontSize =.12.sp)
+                    }
+                }
+            }
+            Button(onClick = onAddLayer, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)) {
+                Text("+ Layer", fontSize = 12.sp)
+            }
+        }
+
         // 2. Drawing Canvas Area
         Box(
             modifier = Modifier
@@ -189,16 +248,15 @@ fun EditorScreen(
                 .fillMaxWidth()
                 .background(Color.White)
         ) {
-            val currentStyledPaths = frames.getOrNull(currentFrameIndex)?.paths ?: emptyList()
-
             DrawingCanvas(
-                styledPaths = currentStyledPaths,
+                layers = currentLayers,
+                currentLayerIndex = currentLayerIndex,
                 toolState = toolState,
-                onPathAdded = onPathAdded
+                onPathAddedToActiveLayer = onPathAdded
             )
         }
 
-        // 3. Tool Palette Toolbar (Loaded from your separate file)
+        // 3. Tool Palette Toolbar
         PaletteToolbar(
             toolState = toolState,
             onToolStateChanged = onToolStateChanged
@@ -208,7 +266,7 @@ fun EditorScreen(
         LazyRow(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(100.dp)
+                .height(90.dp)
                 .background(Color.Black.copy(alpha = 0.8f)),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             contentPadding = PaddingValues(8.dp),
@@ -225,7 +283,7 @@ fun EditorScreen(
             item {
                 Box(
                     modifier = Modifier
-                        .size(70.dp, 84.dp)
+                        .size(70.dp, 74.dp)
                         .background(Color.Gray, shape = RoundedCornerShape(8.dp))
                         .clickable { onAddFrame() },
                     contentAlignment = Alignment.Center
@@ -242,7 +300,7 @@ fun FrameThumbnailItem(index: Int, isSelected: Boolean, onClick: () -> Unit) {
     val borderColor = if (isSelected) Color.Cyan else Color.Transparent
     Box(
         modifier = Modifier
-            .size(70.dp, 84.dp)
+            .size(70.dp, 74.dp)
             .border(2.dp, borderColor, RoundedCornerShape(8.dp))
             .background(Color.White, shape = RoundedCornerShape(8.dp))
             .clickable { onClick() },
