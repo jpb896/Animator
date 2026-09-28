@@ -1,6 +1,7 @@
 package com.jpb.animator
 
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -22,10 +23,16 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.jpb.animator.ui.components.DrawingCanvas
 import com.jpb.animator.ui.theme.AnimatorTheme
+import com.jpb.animator.utils.exportAnimationNative
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 // Represents a single frame containing its drawn paths
 data class AnimationFrame(
@@ -48,27 +55,19 @@ class MainActivity : ComponentActivity() {
                 EditorScreen(
                     currentFrameIndex = currentFrameIndex,
                     frames = frames,
-                    currentPath = currentPath,
                     onPathAdded = { newPath ->
-                        // Add the finished path to the current frame's path list
-                        val updatedFrames = frames.toMutableList()
-                        val currentFrame = updatedFrames[currentFrameIndex]
-                        updatedFrames[currentFrameIndex] = currentFrame.copy(
-                            paths = currentFrame.paths + newPath
-                        )
-                        frames = updatedFrames
-                    },
-                    onCurrentPathChanged = { path ->
-                        currentPath = path
+                        // Add path to the current frame
+                        val updatedPaths = frames[currentFrameIndex].paths + newPath
+                        frames = frames.toMutableList().apply {
+                            this[currentFrameIndex] = this[currentFrameIndex].copy(paths = updatedPaths)
+                        }
                     },
                     onAddFrame = {
-                        // Add a brand new empty frame and switch to it
-                        frames = frames + AnimationFrame()
+                        frames = frames + AnimationFrame(paths = emptyList())
                         currentFrameIndex = frames.size - 1
                     },
                     onSelectFrame = { index ->
                         currentFrameIndex = index
-                        currentPath = null // Reset current drawing path on switch
                     }
                 )
             }
@@ -80,9 +79,7 @@ class MainActivity : ComponentActivity() {
 fun EditorScreen(
     currentFrameIndex: Int,
     frames: List<AnimationFrame>,
-    currentPath: Path?,
     onPathAdded: (Path) -> Unit,
-    onCurrentPathChanged: (Path?) -> Unit,
     onAddFrame: () -> Unit,
     onSelectFrame: (Int) -> Unit
 ) {
@@ -101,7 +98,24 @@ fun EditorScreen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text("My Animation", color = Color.White, fontSize = 20.sp)
-            Button(onClick = { /* Handle Export */ }) {
+            val coroutineScope = rememberCoroutineScope()
+            val context = LocalContext.current
+
+            Button(onClick = {
+                Toast.makeText(context, "Rendering video...", Toast.LENGTH_SHORT).show()
+
+                coroutineScope.launch {
+                    val result = withContext(Dispatchers.IO) {
+                        exportAnimationNative(context, frames)
+                    }
+
+                    if (result.first) {
+                        Toast.makeText(context, "Saved to: ${result.second}", Toast.LENGTH_LONG).show()
+                    } else {
+                        Toast.makeText(context, "Export failed: ${result.second}", Toast.LENGTH_LONG).show()
+                    }
+                }
+            }) {
                 Text("Export")
             }
         }
