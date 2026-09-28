@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -34,6 +35,7 @@ import com.jpb.animator.utils.Layer
 import com.jpb.animator.utils.StyledPath
 import com.jpb.animator.utils.exportAnimationNative
 import com.jpb.animator.utils.renderFrameToBitmap
+import com.jpb.animator.utils.swap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -77,6 +79,12 @@ class MainActivity : ComponentActivity() {
                         currentFrameIndex = index
                         currentLayerIndex = 0
                     },
+                    onMoveFrame = { fromIndex, toIndex ->
+                        if (toIndex in frames.indices) {
+                            frames = frames.swap(fromIndex, toIndex)
+                            currentFrameIndex = toIndex
+                        }
+                    },
                     onAddLayer = {
                         val frame = frames[currentFrameIndex]
                         val newLayerName = "Layer ${frame.layers.size + 1}"
@@ -88,6 +96,16 @@ class MainActivity : ComponentActivity() {
                     },
                     onSelectLayer = { index ->
                         currentLayerIndex = index
+                    },
+                    onMoveLayer = { fromIndex, toIndex ->
+                        val frame = frames[currentFrameIndex]
+                        if (toIndex in frame.layers.indices) {
+                            val updatedLayers = frame.layers.swap(fromIndex, toIndex)
+                            frames = frames.toMutableList().apply {
+                                this[currentFrameIndex] = frame.copy(layers = updatedLayers)
+                            }
+                            currentLayerIndex = toIndex
+                        }
                     }
                 )
             }
@@ -105,8 +123,10 @@ fun EditorScreen(
     onPathAdded: (StyledPath) -> Unit,
     onAddFrame: () -> Unit,
     onSelectFrame: (Int) -> Unit,
+    onMoveFrame: (Int, Int) -> Unit,
     onAddLayer: () -> Unit,
-    onSelectLayer: (Int) -> Unit
+    onSelectLayer: (Int) -> Unit,
+    onMoveLayer: (Int, Int) -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -209,7 +229,7 @@ fun EditorScreen(
             }
         }
 
-        // Layer selection mini-bar
+        // Layer selection mini-bar with re-ordering controls
         val currentLayers = frames.getOrNull(currentFrameIndex)?.layers ?: emptyList()
         Row(
             modifier = Modifier
@@ -222,18 +242,50 @@ fun EditorScreen(
             Text("Layers:", color = Color.White, fontSize = 14.sp)
             LazyRow(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
-                modifier = Modifier.weight(1f)
+                modifier = Modifier.weight(1f),
+                verticalAlignment = Alignment.CenterVertically
             ) {
                 items(currentLayers.size) { layerIndex ->
                     val isLayerSelected = layerIndex == currentLayerIndex
-                    Button(
-                        onClick = { onSelectLayer(layerIndex) },
-                        colors = androidx.compose.material3.ButtonDefaults.buttonColors(
-                            containerColor = if (isLayerSelected) Color.Cyan else Color.Gray
-                        ),
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(2.dp),
+                        modifier = Modifier
+                            .background(
+                                if (isLayerSelected) Color.Cyan.copy(alpha = 0.2f) else Color.Transparent,
+                                shape = RoundedCornerShape(4.dp)
+                            )
+                            .padding(2.dp)
                     ) {
-                        Text(currentLayers[layerIndex].name, color = if (isLayerSelected) Color.Black else Color.White, fontSize =.12.sp)
+                        if (layerIndex > 0) {
+                            Button(
+                                onClick = { onMoveLayer(layerIndex, layerIndex - 1) },
+                                contentPadding = PaddingValues(2.dp),
+                                modifier = Modifier.size(20.dp)
+                            ) {
+                                Text("<", fontSize = 10.sp)
+                            }
+                        }
+
+                        Button(
+                            onClick = { onSelectLayer(layerIndex) },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (isLayerSelected) Color.Cyan else Color.Gray
+                            ),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                        ) {
+                            Text(currentLayers[layerIndex].name, color = if (isLayerSelected) Color.Black else Color.White, fontSize = 12.sp)
+                        }
+
+                        if (layerIndex < currentLayers.size - 1) {
+                            Button(
+                                onClick = { onMoveLayer(layerIndex, layerIndex + 1) },
+                                contentPadding = PaddingValues(2.dp),
+                                modifier = Modifier.size(20.dp)
+                            ) {
+                                Text(">", fontSize = 10.sp)
+                            }
+                        }
                     }
                 }
             }
@@ -242,7 +294,7 @@ fun EditorScreen(
             }
         }
 
-        // 2. Drawing Canvas Area
+        // 2. Drawing Canvas Area with clipping to prevent overbleed
         Box(
             modifier = Modifier
                 .weight(1f)
@@ -264,7 +316,7 @@ fun EditorScreen(
             onToolStateChanged = onToolStateChanged
         )
 
-        // 4. Timeline / Frame Bar at the bottom
+        // 4. Timeline / Frame Bar at the bottom with re-ordering controls
         LazyRow(
             modifier = Modifier
                 .fillMaxWidth()
@@ -277,8 +329,11 @@ fun EditorScreen(
             items(frames.size) { index ->
                 FrameThumbnailItem(
                     index = index,
+                    totalFrames = frames.size,
                     isSelected = index == currentFrameIndex,
-                    onClick = { onSelectFrame(index) }
+                    onClick = { onSelectFrame(index) },
+                    onMoveLeft = { onMoveFrame(index, index - 1) },
+                    onMoveRight = { onMoveFrame(index, index + 1) }
                 )
             }
 
@@ -298,16 +353,53 @@ fun EditorScreen(
 }
 
 @Composable
-fun FrameThumbnailItem(index: Int, isSelected: Boolean, onClick: () -> Unit) {
+fun FrameThumbnailItem(
+    index: Int,
+    totalFrames: Int,
+    isSelected: Boolean,
+    onClick: () -> Unit,
+    onMoveLeft: () -> Unit,
+    onMoveRight: () -> Unit
+) {
     val borderColor = if (isSelected) Color.Cyan else Color.Transparent
-    Box(
-        modifier = Modifier
-            .size(70.dp, 74.dp)
-            .border(2.dp, borderColor, RoundedCornerShape(8.dp))
-            .background(Color.White, shape = RoundedCornerShape(8.dp))
-            .clickable { onClick() },
-        contentAlignment = Alignment.Center
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
     ) {
-        Text("${index + 1}", color = Color.Black)
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (index > 0) {
+                Button(
+                    onClick = onMoveLeft,
+                    contentPadding = PaddingValues(0.dp),
+                    modifier = Modifier.size(18.dp, 24.dp)
+                ) {
+                    Text("<", fontSize = 10.sp)
+                }
+            }
+
+            Box(
+                modifier = Modifier
+                    .size(54.dp, 54.dp)
+                    .border(2.dp, borderColor, RoundedCornerShape(8.dp))
+                    .background(Color.White, shape = RoundedCornerShape(8.dp))
+                    .clickable { onClick() },
+                contentAlignment = Alignment.Center
+            ) {
+                Text("${index + 1}", color = Color.Black)
+            }
+
+            if (index < totalFrames - 1) {
+                Button(
+                    onClick = onMoveRight,
+                    contentPadding = PaddingValues(0.dp),
+                    modifier = Modifier.size(18.dp, 24.dp)
+                ) {
+                    Text(">", fontSize = 10.sp)
+                }
+            }
+        }
     }
 }
