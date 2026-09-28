@@ -66,12 +66,25 @@ class MainActivity : ComponentActivity() {
                         val newLayerPaths = targetLayer.paths + newStyledPath
                         updatedLayers[currentLayerIndex] = targetLayer.copy(paths = newLayerPaths)
 
-                        frames = frames.toMutableList().apply {
-                            this[currentFrameIndex] = frame.copy(layers = updatedLayers)
-                        }
+                        val mutableFrames = frames.toMutableList()
+                        mutableFrames[currentFrameIndex] = frame.copy(layers = updatedLayers)
+                        frames = mutableFrames
+                    },
+                    onLayerBitmapUpdated = { newBitmap ->
+                        val frame = frames[currentFrameIndex]
+                        val updatedLayers = frame.layers.toMutableList()
+                        val targetLayer = updatedLayers.getOrElse(currentLayerIndex) { updatedLayers.first() }
+
+                        updatedLayers[currentLayerIndex] = targetLayer.copy(rasterBitmap = newBitmap)
+
+                        val mutableFrames = frames.toMutableList()
+                        mutableFrames[currentFrameIndex] = frame.copy(layers = updatedLayers)
+                        frames = mutableFrames
                     },
                     onAddFrame = {
-                        frames += AnimationFrame(layers = listOf(Layer(name = "Layer 1")))
+                        val mutableFrames = frames.toMutableList()
+                        mutableFrames.add(AnimationFrame(layers = listOf(Layer(name = "Layer 1"))))
+                        frames = mutableFrames
                         currentFrameIndex = frames.size - 1
                         currentLayerIndex = 0
                     },
@@ -89,9 +102,10 @@ class MainActivity : ComponentActivity() {
                         val frame = frames[currentFrameIndex]
                         val newLayerName = "Layer ${frame.layers.size + 1}"
                         val updatedLayers = frame.layers + Layer(name = newLayerName)
-                        frames = frames.toMutableList().apply {
-                            this[currentFrameIndex] = frame.copy(layers = updatedLayers)
-                        }
+
+                        val mutableFrames = frames.toMutableList()
+                        mutableFrames[currentFrameIndex] = frame.copy(layers = updatedLayers)
+                        frames = mutableFrames
                         currentLayerIndex = updatedLayers.size - 1
                     },
                     onSelectLayer = { index ->
@@ -101,9 +115,9 @@ class MainActivity : ComponentActivity() {
                         val frame = frames[currentFrameIndex]
                         if (toIndex in frame.layers.indices) {
                             val updatedLayers = frame.layers.swap(fromIndex, toIndex)
-                            frames = frames.toMutableList().apply {
-                                this[currentFrameIndex] = frame.copy(layers = updatedLayers)
-                            }
+                            val mutableFrames = frames.toMutableList()
+                            mutableFrames[currentFrameIndex] = frame.copy(layers = updatedLayers)
+                            frames = mutableFrames
                             currentLayerIndex = toIndex
                         }
                     }
@@ -121,6 +135,7 @@ fun EditorScreen(
     toolState: DrawingToolState,
     onToolStateChanged: (DrawingToolState) -> Unit,
     onPathAdded: (StyledPath) -> Unit,
+    onLayerBitmapUpdated: (Bitmap) -> Unit,
     onAddFrame: () -> Unit,
     onSelectFrame: (Int) -> Unit,
     onMoveFrame: (Int, Int) -> Unit,
@@ -302,12 +317,20 @@ fun EditorScreen(
                 .clipToBounds()
                 .background(Color.White)
         ) {
-            DrawingCanvas(
-                layers = currentLayers,
-                currentLayerIndex = currentLayerIndex,
-                toolState = toolState,
-                onPathAddedToActiveLayer = onPathAdded
-            )
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clipToBounds()
+                    .background(Color.White)
+            ) {
+                DrawingCanvas(
+                    layers = currentLayers,
+                    currentLayerIndex = currentLayerIndex,
+                    toolState = toolState,
+                    onPathAddedToActiveLayer = onPathAdded,
+                    onLayerBitmapUpdated = onLayerBitmapUpdated // <--- Pass it right here!
+                )
+            }
         }
 
         // 3. Tool Palette Toolbar

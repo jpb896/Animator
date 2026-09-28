@@ -3,7 +3,7 @@ package com.jpb.animator.utils
 import androidx.compose.ui.graphics.Color
 
 enum class ToolType {
-    PEN, ERASER, FILL
+    PEN, ERASER, FILL, FLOODFILL
 }
 
 data class DrawingToolState(

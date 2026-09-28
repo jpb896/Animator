@@ -51,6 +51,13 @@ fun PaletteToolbar(
                     containerColor = if (toolState.toolType == ToolType.FILL) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondary
                 )
             ) { Text("Fill Shape") }
+
+            Button(
+                onClick = { onToolStateChanged(toolState.copy(toolType = ToolType.FLOODFILL)) },
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (toolState.toolType == ToolType.FLOODFILL) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondary
+                )
+            ) { Text("Flood Fill") }
         }
 
         Spacer(modifier = Modifier.height(8.dp))

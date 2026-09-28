@@ -1,9 +1,11 @@
 package com.jpb.animator.utils
 
+import android.graphics.Bitmap
+
 data class Layer(
-    val id: String = java.util.UUID.randomUUID().toString(),
     val name: String,
     val paths: List<StyledPath> = emptyList(),
+    val rasterBitmap: Bitmap? = null,
     val isVisible: Boolean = true
 )
 
