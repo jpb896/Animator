@@ -15,6 +15,7 @@ import androidx.compose.ui.graphics.asAndroidPath
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Fill
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import com.jpb.animator.utils.DrawStyle
 import com.jpb.animator.utils.DrawingToolState
@@ -22,6 +23,8 @@ import com.jpb.animator.utils.FloodFillUtils
 import com.jpb.animator.utils.Layer
 import com.jpb.animator.utils.StyledPath
 import com.jpb.animator.utils.ToolType
+import androidx.core.graphics.get
+import androidx.core.graphics.createBitmap
 
 @Composable
 fun DrawingCanvas(
@@ -32,11 +35,10 @@ fun DrawingCanvas(
     onLayerBitmapUpdated: ((Bitmap) -> Unit)? = null
 ) {
     var currentPath by remember { mutableStateOf<Path?>(null) }
-    // 1. Keep track of points for the current stroke
     var currentPoints by remember { mutableStateOf<MutableList<Offset>>(mutableListOf()) }
 
     var activeColor by remember { mutableStateOf(Color.Black) }
-    var activeStrokeWidth by remember { mutableStateOf(8f) }
+    var activeStrokeWidth by remember { mutableFloatStateOf(8f) }
     var activeDrawStyle by remember { mutableStateOf(DrawStyle.STROKE) }
 
     val currentLayer = layers.getOrNull(currentLayerIndex)
@@ -46,14 +48,64 @@ fun DrawingCanvas(
             .fillMaxSize()
             .pointerInput(toolState, currentLayerIndex) {
                 if (toolState.toolType == ToolType.FLOODFILL) {
-                    // ... (keep your flood fill tap gestures as they are) ...
+                    detectTapGestures(
+                        onTap = { offset ->
+                            val bitmapWidth = size.width
+                            val bitmapHeight = size.height
+                            if (bitmapWidth <= 0 || bitmapHeight <= 0) return@detectTapGestures
+
+                            // 1. Create a mutable bitmap representing the exact visual layout
+                            val mutableBmp = createBitmap(bitmapWidth, bitmapHeight)
+                            val androidCanvas = android.graphics.Canvas(mutableBmp)
+
+                            // 2. Draw canvas background
+                            androidCanvas.drawColor(android.graphics.Color.WHITE)
+
+                            // 3. Draw existing layer bitmap content if present
+                            currentLayer?.rasterBitmap?.let { existingBmp ->
+                                androidCanvas.drawBitmap(existingBmp, 0f, 0f, null)
+                            }
+
+                            // 4. Draw all vector paths onto the bitmap so they act as fill boundaries
+                            currentLayer?.paths?.forEach { styledPath ->
+                                val paint = android.graphics.Paint().apply {
+                                    isAntiAlias = true
+                                    color = styledPath.color.toArgb()
+                                    strokeWidth = styledPath.strokeWidth
+                                    strokeCap = android.graphics.Paint.Cap.ROUND
+                                    style = if (styledPath.drawStyle == DrawStyle.FILL) {
+                                        android.graphics.Paint.Style.FILL
+                                    } else {
+                                        android.graphics.Paint.Style.STROKE
+                                    }
+                                }
+                                androidCanvas.drawPath(styledPath.path.asAndroidPath(), paint)
+                            }
+
+                            val startX = offset.x.toInt().coerceIn(0, bitmapWidth - 1)
+                            val startY = offset.y.toInt().coerceIn(0, bitmapHeight - 1)
+
+                            val targetColor = mutableBmp[startX, startY]
+                            val replacementColor = toolState.currentColor.toArgb()
+
+                            // 5. Execute flood fill bounded by paths and canvas edges
+                            val filledBitmap = FloodFillUtils.floodFill(
+                                bitmap = mutableBmp,
+                                startX = startX,
+                                startY = startY,
+                                targetColor = targetColor,
+                                replacementColor = replacementColor
+                            )
+
+                            // 6. Update layer raster bitmap state
+                            onLayerBitmapUpdated?.invoke(filledBitmap)
+                        }
+                    )
                 } else {
                     detectDragGestures(
                         onDragStart = { offset ->
                             val path = Path().apply { moveTo(offset.x, offset.y) }
                             currentPath = path
-
-                            // 2. Clear/Initialize points list for the new stroke
                             currentPoints = mutableListOf(offset)
 
                             activeStrokeWidth = toolState.strokeWidth
@@ -78,8 +130,6 @@ fun DrawingCanvas(
                             currentPath?.let { path ->
                                 path.lineTo(change.position.x, change.position.y)
                                 currentPath = Path().apply { addPath(path) }
-
-                                // 3. Record every dragged point
                                 currentPoints.add(change.position)
                             }
                         },
@@ -87,7 +137,7 @@ fun DrawingCanvas(
                             currentPath?.let { path ->
                                 val newStyledPath = StyledPath(
                                     rawPath = path,
-                                    rawPoints = currentPoints, // 4. Pass the collected points here!
+                                    rawPoints = currentPoints,
                                     color = activeColor,
                                     strokeWidth = activeStrokeWidth,
                                     drawStyle = activeDrawStyle
