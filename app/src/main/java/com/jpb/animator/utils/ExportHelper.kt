@@ -8,6 +8,7 @@ import android.media.MediaFormat
 import android.media.MediaMuxer
 import androidx.compose.ui.graphics.asAndroidPath
 import java.io.File
+import androidx.core.graphics.withScale
 
 fun exportAnimationNative(
     context: Context,
@@ -56,6 +57,11 @@ fun exportAnimationNative(
         // Calculate the exact delay per frame in milliseconds for proper pacing
         val frameIntervalMs = 1_000L / fps.coerceAtLeast(1)
 
+        // Calculate scaling factors to map UI screen pixels to export resolution
+        val density = context.resources.displayMetrics.density
+        val scaleX = safeWidth.toFloat() / (width * density)
+        val scaleY = safeHeight.toFloat() / (height * density)
+
         // Draw and feed each frame onto the encoder surface with precise pacing
         for (i in frames.indices) {
             trackIndex = drainEncoderCompletely(codec, muxer, bufferInfo, trackIndex, { muxerStarted }, { muxerStarted = true })
@@ -64,26 +70,36 @@ fun exportAnimationNative(
             try {
                 canvas.drawColor(backgroundColorInt)
 
-                frames[i].layers.forEach { layer ->
-                    if (layer.isVisible) {
-                        layer.paths.forEach { styledPath ->
-                            val paint = android.graphics.Paint().apply {
-                                strokeWidth = styledPath.strokeWidth
-                                style = if (styledPath.drawStyle == DrawStyle.FILL) {
-                                    android.graphics.Paint.Style.FILL
-                                } else {
-                                    android.graphics.Paint.Style.STROKE
-                                }
-                                strokeCap = android.graphics.Paint.Cap.ROUND
-                                isAntiAlias = true
-                                color = AndroidColor.argb(
-                                    styledPath.color.alpha,
-                                    styledPath.color.red,
-                                    styledPath.color.green,
-                                    styledPath.color.blue
-                                )
+                // Scale canvas to match UI coordinate space to export resolution correctly
+                canvas.withScale(scaleX, scaleY) {
+                    frames[i].layers.forEach { layer ->
+                        if (layer.isVisible) {
+                            // Draw raster bitmaps (e.g. flood fills)
+                            layer.rasterBitmap?.let { bitmap ->
+                                drawBitmap(bitmap, 0f, 0f, null)
                             }
-                            canvas.drawPath(styledPath.path.asAndroidPath(), paint)
+
+                            // Draw vector paths
+                            layer.paths.forEach { styledPath ->
+                                val paint = android.graphics.Paint().apply {
+                                    // Compensate stroke width for canvas scaling so lines match UI thickness
+                                    strokeWidth = styledPath.strokeWidth / scaleX
+                                    style = if (styledPath.drawStyle == DrawStyle.FILL) {
+                                        android.graphics.Paint.Style.FILL
+                                    } else {
+                                        android.graphics.Paint.Style.STROKE
+                                    }
+                                    strokeCap = android.graphics.Paint.Cap.ROUND
+                                    isAntiAlias = true
+                                    color = AndroidColor.argb(
+                                        styledPath.color.alpha,
+                                        styledPath.color.red,
+                                        styledPath.color.green,
+                                        styledPath.color.blue
+                                    )
+                                }
+                                drawPath(styledPath.path.asAndroidPath(), paint)
+                            }
                         }
                     }
                 }
