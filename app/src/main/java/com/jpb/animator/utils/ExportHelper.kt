@@ -14,11 +14,16 @@ fun exportAnimationNative(
     frames: List<AnimationFrame>,
     fps: Int = 10,
     width: Int = 1080,
-    height: Int = 1080
+    height: Int = 1080,
+    backgroundColorInt: Int = AndroidColor.WHITE
 ): Pair<Boolean, String> {
     if (frames.isEmpty()) {
         return Pair(false, "No frames to export")
     }
+
+    // Ensure width and height are even numbers (required by hardware H.264 encoders)
+    val safeWidth = if (width % 2 != 0) width + 1 else width
+    val safeHeight = if (height % 2 != 0) height + 1 else height
 
     val outputFile = File(context.getExternalFilesDir(null), "animation_output.mp4")
     if (outputFile.exists()) {
@@ -26,7 +31,7 @@ fun exportAnimationNative(
     }
 
     val mimeType = MediaFormat.MIMETYPE_VIDEO_AVC
-    val format = MediaFormat.createVideoFormat(mimeType, width, height).apply {
+    val format = MediaFormat.createVideoFormat(mimeType, safeWidth, safeHeight).apply {
         setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
         setInteger(MediaFormat.KEY_BIT_RATE, 2_000_000)
         setInteger(MediaFormat.KEY_FRAME_RATE, fps)
@@ -47,17 +52,18 @@ fun exportAnimationNative(
 
         var trackIndex = -1
         val bufferInfo = MediaCodec.BufferInfo()
-        val frameIntervalMs = 1000L / fps
 
-        // Draw and feed each frame onto the encoder surface with real-world pacing
+        // Calculate the exact delay per frame in milliseconds for proper pacing
+        val frameIntervalMs = 1_000L / fps.coerceAtLeast(1)
+
+        // Draw and feed each frame onto the encoder surface with precise pacing
         for (i in frames.indices) {
             trackIndex = drainEncoderCompletely(codec, muxer, bufferInfo, trackIndex, { muxerStarted }, { muxerStarted = true })
 
             val canvas = surface.lockCanvas(null)
             try {
-                canvas.drawColor(AndroidColor.WHITE)
+                canvas.drawColor(backgroundColorInt)
 
-                // Loop through layers instead of paths directly
                 frames[i].layers.forEach { layer ->
                     if (layer.isVisible) {
                         layer.paths.forEach { styledPath ->
@@ -85,12 +91,8 @@ fun exportAnimationNative(
                 surface.unlockCanvasAndPost(canvas)
             }
 
-            try {
-                Thread.sleep(frameIntervalMs)
-            } catch (e: InterruptedException) {
-                Thread.currentThread().interrupt()
-                break
-            }
+            // Pace the frame submission so the hardware encoder processes them smoothly
+            Thread.sleep(frameIntervalMs)
         }
 
         // Signal the end of the stream

@@ -13,21 +13,26 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Text
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.jpb.animator.ui.components.DrawingCanvas
@@ -48,7 +53,7 @@ import java.io.File
 
 sealed class AppScreen {
     object Home : AppScreen()
-    data class Editor(val projectId: String) : AppScreen()
+    data class Editor(val projectId: String, val isNew: Boolean) : AppScreen()
 }
 
 class MainActivity : ComponentActivity() {
@@ -64,16 +69,17 @@ class MainActivity : ComponentActivity() {
                         HomeScreen(
                             onCreateNewProject = {
                                 val newProjectId = "project_${System.currentTimeMillis()}"
-                                currentScreen = AppScreen.Editor(projectId = newProjectId)
+                                currentScreen = AppScreen.Editor(projectId = newProjectId, isNew = true)
                             },
                             onOpenProject = { projectId ->
-                                currentScreen = AppScreen.Editor(projectId = projectId)
+                                currentScreen = AppScreen.Editor(projectId = projectId, isNew = false)
                             }
                         )
                     }
                     is AppScreen.Editor -> {
                         EditorFlow(
                             projectId = screen.projectId,
+                            isNewProject = screen.isNew,
                             onBackToHome = {
                                 currentScreen = AppScreen.Home
                             }
@@ -92,11 +98,18 @@ fun HomeScreen(
 ) {
     val context = LocalContext.current
     var projectFolders by remember { mutableStateOf<List<File>>(emptyList()) }
+    var projectTitlesState by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
 
     LaunchedEffect(Unit) {
         val rootDir = context.filesDir
         val projects = rootDir.listFiles()?.filter { it.isDirectory && it.name.startsWith("project_") }?.sortedByDescending { it.name }?.toList() ?: emptyList()
         projectFolders = projects
+
+        val titlesMap = mutableMapOf<String, String>()
+        for (folder in projects) {
+            titlesMap[folder.name] = ProjectManager.loadProjectTitle(context, folder.name)
+        }
+        projectTitlesState = titlesMap
     }
 
     Column(
@@ -143,7 +156,7 @@ fun HomeScreen(
             }
 
             items(projectFolders) { projectFolder ->
-                val displayTitle = projectFolder.name.removePrefix("project_")
+                val displayTitle = projectTitlesState[projectFolder.name] ?: projectFolder.name.removePrefix("project_")
                 Box(
                     modifier = Modifier
                         .height(180.dp)
@@ -156,7 +169,7 @@ fun HomeScreen(
                         modifier = Modifier.padding(8.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        Text("Animation #$displayTitle", color = Color.Black, fontSize = 14.sp)
+                        Text(displayTitle, color = Color.Black, fontSize = 16.sp, maxLines = 1)
                         Spacer(modifier = Modifier.height(8.dp))
                         Text("Tap to edit", color = Color.Gray, fontSize = 12.sp)
                     }
@@ -169,38 +182,71 @@ fun HomeScreen(
 @Composable
 fun EditorFlow(
     projectId: String,
+    isNewProject: Boolean,
     onBackToHome: () -> Unit
 ) {
     val context = LocalContext.current
-    var frames by remember { mutableStateOf(listOf(AnimationFrame())) }
+    var frames by remember { mutableStateOf(listOf(AnimationFrame(layers = listOf(Layer(name = "Layer 1"))))) }
+    var projectTitle by remember { mutableStateOf(projectId.removePrefix("project_")) }
+    var fps by remember { mutableIntStateOf(12) }
+    var canvasWidth by remember { mutableIntStateOf(400) }
+    var canvasHeight by remember { mutableIntStateOf(400) }
+    var backgroundColorInt by remember { mutableIntStateOf(Color.White.toArgb()) }
+
     var currentFrameIndex by remember { mutableIntStateOf(0) }
     var currentLayerIndex by remember { mutableIntStateOf(0) }
     var toolState by remember { mutableStateOf(DrawingToolState()) }
+    var showSettingsDialog by remember { mutableStateOf(isNewProject) }
 
-    // Load project on start if it exists
     LaunchedEffect(projectId) {
-        val loaded = ProjectManager.loadProject(context, projectId)
-        if (loaded != null && loaded.isNotEmpty()) {
-            frames = loaded
+        val loadedFrames = ProjectManager.loadProject(context, projectId)
+        if (!loadedFrames.isNullOrEmpty()) {
+            frames = loadedFrames
+        }
+
+        val loadedMeta = ProjectManager.loadProjectMetadata(context, projectId)
+        if (loadedMeta != null) {
+            projectTitle = loadedMeta["title"] as? String ?: projectTitle
+            fps = loadedMeta["fps"] as? Int ?: fps
+            canvasWidth = loadedMeta["width"] as? Int ?: canvasWidth
+            canvasHeight = loadedMeta["height"] as? Int ?: canvasHeight
+            backgroundColorInt = loadedMeta["bgColor"] as? Int ?: backgroundColorInt
         }
     }
 
     EditorScreen(
+        projectId = projectId,
+        projectTitle = projectTitle,
+        fps = fps,
+        width = canvasWidth,
+        height = canvasHeight,
+        backgroundColorInt = backgroundColorInt,
+        frames = frames,
         currentFrameIndex = currentFrameIndex,
         currentLayerIndex = currentLayerIndex,
-        frames = frames,
         toolState = toolState,
+        showSettingsDialog = showSettingsDialog,
+        onToggleSettingsDialog = { showSettingsDialog = it },
         onToolStateChanged = { newToolState -> toolState = newToolState },
+        onUpdateProjectSettings = { newTitle, newFps, newWidth, newHeight, newColorInt ->
+            projectTitle = newTitle
+            fps = newFps
+            canvasWidth = newWidth
+            canvasHeight = newHeight
+            backgroundColorInt = newColorInt
+        },
         onBack = {
             ProjectManager.saveProject(context, projectId, frames)
+            ProjectManager.saveProjectMetadata(context, projectId, projectTitle, fps, canvasWidth, canvasHeight, backgroundColorInt)
             onBackToHome()
         },
         onSaveProject = {
-            val success = ProjectManager.saveProject(context, projectId, frames)
-            Toast.makeText(context, if (success) "Project saved!" else "Save failed", Toast.LENGTH_SHORT).show()
+            val successFrames = ProjectManager.saveProject(context, projectId, frames)
+            val successMeta = ProjectManager.saveProjectMetadata(context, projectId, projectTitle, fps, canvasWidth, canvasHeight, backgroundColorInt)
+            Toast.makeText(context, if (successFrames && successMeta) "Project saved!" else "Save failed", Toast.LENGTH_SHORT).show()
         },
         onPathAdded = { newStyledPath ->
-            val frame = frames[currentFrameIndex]
+            val frame = frames.getOrNull(currentFrameIndex) ?: return@EditorScreen
             val updatedLayers = frame.layers.toMutableList()
             val targetLayer = updatedLayers.getOrElse(currentLayerIndex) { updatedLayers.first() }
 
@@ -212,7 +258,7 @@ fun EditorFlow(
             frames = mutableFrames
         },
         onLayerBitmapUpdated = { newBitmap ->
-            val frame = frames[currentFrameIndex]
+            val frame = frames.getOrNull(currentFrameIndex) ?: return@EditorScreen
             val updatedLayers = frame.layers.toMutableList()
             val targetLayer = updatedLayers.getOrElse(currentLayerIndex) { updatedLayers.first() }
 
@@ -240,7 +286,7 @@ fun EditorFlow(
             }
         },
         onAddLayer = {
-            val frame = frames[currentFrameIndex]
+            val frame = frames.getOrNull(currentFrameIndex) ?: return@EditorScreen
             val newLayerName = "Layer ${frame.layers.size + 1}"
             val updatedLayers = frame.layers + Layer(name = newLayerName)
 
@@ -253,7 +299,7 @@ fun EditorFlow(
             currentLayerIndex = index
         },
         onMoveLayer = { fromIndex, toIndex ->
-            val frame = frames[currentFrameIndex]
+            val frame = frames.getOrNull(currentFrameIndex) ?: return@EditorScreen
             if (toIndex in frame.layers.indices) {
                 val updatedLayers = frame.layers.swap(fromIndex, toIndex)
                 val mutableFrames = frames.toMutableList()
@@ -265,13 +311,23 @@ fun EditorFlow(
     )
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun EditorScreen(
+    projectId: String,
+    projectTitle: String,
+    fps: Int,
+    width: Int,
+    height: Int,
+    backgroundColorInt: Int,
+    frames: List<AnimationFrame>,
     currentFrameIndex: Int,
     currentLayerIndex: Int,
-    frames: List<AnimationFrame>,
     toolState: DrawingToolState,
+    showSettingsDialog: Boolean,
+    onToggleSettingsDialog: (Boolean) -> Unit,
     onToolStateChanged: (DrawingToolState) -> Unit,
+    onUpdateProjectSettings: (String, Int, Int, Int, Int) -> Unit,
     onBack: () -> Unit,
     onSaveProject: () -> Unit,
     onPathAdded: (StyledPath) -> Unit,
@@ -283,239 +339,382 @@ fun EditorScreen(
     onSelectLayer: (Int) -> Unit,
     onMoveLayer: (Int, Int) -> Unit
 ) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.DarkGray)
-            .statusBarsPadding()
-    ) {
-        // 1. Top Bar
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(8.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = onBack, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)) {
-                    Text("< Back", fontSize = 12.sp)
-                }
-                Text("Animator", color = Color.White, fontSize = 18.sp)
+    val context = LocalContext.current
+
+    if (showSettingsDialog) {
+        EmbeddedProjectSettingsDialog(
+            projectTitle = projectTitle,
+            fps = fps,
+            width = width,
+            height = height,
+            backgroundColorInt = backgroundColorInt,
+            onDismiss = { onToggleSettingsDialog(false) },
+            onSave = { updatedTitle, updatedFps, updatedWidth, updatedHeight, updatedColorInt ->
+                // 1. Update live editor state
+                onUpdateProjectSettings(updatedTitle, updatedFps, updatedWidth, updatedHeight, updatedColorInt)
+
+                // 2. Persist to disk immediately
+                ProjectManager.saveProjectMetadata(
+                    context = context,
+                    projectId = projectId,
+                    title = updatedTitle,
+                    fps = updatedFps,
+                    width = updatedWidth,
+                    height = updatedHeight,
+                    bgColor = updatedColorInt
+                )
+
+                // 3. Close dialog
+                onToggleSettingsDialog(false)
             }
+        )
+    }
 
-            val coroutineScope = rememberCoroutineScope()
-            val context = LocalContext.current
-            val createVideoLauncher = rememberLauncherForActivityResult(
-                contract = ActivityResultContracts.CreateDocument("video/mp4")
-            ) { uri: Uri? ->
-                if (uri != null) {
-                    Toast.makeText(context, "Exporting video...", Toast.LENGTH_SHORT).show()
-
-                    coroutineScope.launch(Dispatchers.IO) {
-                        try {
-                            val exportResult = exportAnimationNative(context, frames)
-
-                            if (exportResult.first) {
-                                val generatedFile = File(exportResult.second)
-                                context.contentResolver.openOutputStream(uri)?.use { outputStream ->
-                                    generatedFile.inputStream().use { inputStream ->
-                                        inputStream.copyTo(outputStream)
-                                    }
-                                }
-
-                                withContext(Dispatchers.Main) {
-                                    Toast.makeText(context, "Video exported successfully!", Toast.LENGTH_LONG).show()
-                                }
-                            } else {
-                                withContext(Dispatchers.Main) {
-                                    Toast.makeText(context, "Export failed: ${exportResult.second}", Toast.LENGTH_LONG).show()
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text(text = projectTitle, maxLines = 1, color = Color.White) },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
+                    }
+                },
+                actions = {
+                    IconButton(onClick = { onToggleSettingsDialog(true) }) {
+                        Icon(Icons.Default.Settings, contentDescription = "Settings", tint = Color.White)
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.DarkGray)
+            )
+        },
+        containerColor = Color.DarkGray
+    ) { innerPadding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+        ) {
+            val currentLayers = frames.getOrNull(currentFrameIndex)?.layers ?: emptyList()
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color.Black.copy(alpha = 0.5f))
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Layers:", color = Color.White, fontSize = 14.sp)
+                LazyRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.weight(1f),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    items(currentLayers.size) { layerIndex ->
+                        val isLayerSelected = layerIndex == currentLayerIndex
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(2.dp),
+                            modifier = Modifier
+                                .background(
+                                    if (isLayerSelected) Color.Cyan.copy(alpha = 0.2f) else Color.Transparent,
+                                    shape = RoundedCornerShape(4.dp)
+                                )
+                                .padding(2.dp)
+                        ) {
+                            if (layerIndex > 0) {
+                                Button(
+                                    onClick = { onMoveLayer(layerIndex, layerIndex - 1) },
+                                    contentPadding = PaddingValues(2.dp),
+                                    modifier = Modifier.size(20.dp)
+                                ) {
+                                    Text("<", fontSize = 10.sp)
                                 }
                             }
-                        } catch (e: Exception) {
-                            withContext(Dispatchers.Main) {
-                                Toast.makeText(context, "Export failed: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
+
+                            Button(
+                                onClick = { onSelectLayer(layerIndex) },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (isLayerSelected) Color.Cyan else Color.Gray
+                                ),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                            ) {
+                                Text(currentLayers[layerIndex].name, color = if (isLayerSelected) Color.Black else Color.White, fontSize = 12.sp)
+                            }
+
+                            if (layerIndex < currentLayers.size - 1) {
+                                Button(
+                                    onClick = { onMoveLayer(layerIndex, layerIndex + 1) },
+                                    contentPadding = PaddingValues(2.dp),
+                                    modifier = Modifier.size(20.dp)
+                                ) {
+                                    Text(">", fontSize = 10.sp)
+                                }
                             }
                         }
                     }
                 }
+                Button(onClick = onAddLayer, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)) {
+                    Text("+ Layer", fontSize = 12.sp)
+                }
             }
-            var pendingFrameIndex by remember { mutableStateOf<Int?>(null) }
 
-            val saveSingleFrameLauncher = rememberLauncherForActivityResult(
-                contract = ActivityResultContracts.CreateDocument("image/png")
-            ) { uri: Uri? ->
-                val indexToSave = pendingFrameIndex
-                if (uri != null && indexToSave != null) {
-                    val frameToSave = frames.getOrNull(indexToSave)
-                    if (frameToSave != null) {
-                        Toast.makeText(context, "Saving frame...", Toast.LENGTH_SHORT).show()
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(8.dp),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                val coroutineScope = rememberCoroutineScope()
+                var pendingFrameIndex by remember { mutableStateOf<Int?>(null) }
 
+                val createVideoLauncher = rememberLauncherForActivityResult(
+                    contract = ActivityResultContracts.CreateDocument("video/mp4")
+                ) { uri: Uri? ->
+                    if (uri != null) {
+                        Toast.makeText(context, "Exporting video...", Toast.LENGTH_SHORT).show()
                         coroutineScope.launch(Dispatchers.IO) {
                             try {
-                                context.contentResolver.openOutputStream(uri)?.use { outputStream ->
-                                    val bitmap = renderFrameToBitmap(frameToSave)
-                                    bitmap.compress(Bitmap.CompressFormat.PNG, 100, outputStream)
-                                }
-                                withContext(Dispatchers.Main) {
-                                    Toast.makeText(context, "Frame successfully saved!", Toast.LENGTH_LONG).show()
+                                val exportResult = exportAnimationNative(
+                                    context = context,
+                                    frames = frames,
+                                    fps = fps,
+                                    width = width,
+                                    height = height,
+                                    backgroundColorInt = backgroundColorInt
+                                )
+
+                                if (exportResult.first) {
+                                    val generatedFile = File(exportResult.second)
+                                    context.contentResolver.openOutputStream(uri)?.use { outputStream ->
+                                        generatedFile.inputStream().use { inputStream ->
+                                            inputStream.copyTo(outputStream)
+                                        }
+                                    }
+                                    withContext(Dispatchers.Main) {
+                                        Toast.makeText(context, "Video exported successfully!", Toast.LENGTH_LONG).show()
+                                    }
+                                } else {
+                                    withContext(Dispatchers.Main) {
+                                        Toast.makeText(context, "Export failed: ${exportResult.second}", Toast.LENGTH_LONG).show()
+                                    }
                                 }
                             } catch (e: Exception) {
                                 withContext(Dispatchers.Main) {
-                                    Toast.makeText(context, "Failed to save frame: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
+                                    Toast.makeText(context, "Export failed: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
                                 }
                             }
                         }
                     }
                 }
-                pendingFrameIndex = null
-            }
 
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                Button(onClick = onSaveProject, contentPadding = PaddingValues(horizontal = 6.dp)) {
-                    Text("Save", fontSize = 12.sp)
-                }
-
-                Button(onClick = {
-                    pendingFrameIndex = currentFrameIndex
-                    saveSingleFrameLauncher.launch("Frame_${currentFrameIndex + 1}.png")
-                }, contentPadding = PaddingValues(horizontal = 6.dp)) {
-                    Text("Frame", fontSize = 12.sp)
-                }
-
-                Button(onClick = {
-                    Toast.makeText(context, "Rendering video...", Toast.LENGTH_SHORT).show()
-                    coroutineScope.launch {
-                        createVideoLauncher.launch("MyAnimation.mp4")
+                val saveSingleFrameLauncher = rememberLauncherForActivityResult(
+                    contract = ActivityResultContracts.CreateDocument("image/png")
+                ) { uri: Uri? ->
+                    val indexToSave = pendingFrameIndex
+                    if (uri != null && indexToSave != null) {
+                        val frameToSave = frames.getOrNull(indexToSave)
+                        if (frameToSave != null) {
+                            Toast.makeText(context, "Saving frame...", Toast.LENGTH_SHORT).show()
+                            coroutineScope.launch(Dispatchers.IO) {
+                                try {
+                                    context.contentResolver.openOutputStream(uri)?.use { outputStream ->
+                                        val bitmap = renderFrameToBitmap(frameToSave)
+                                        bitmap.compress(Bitmap.CompressFormat.PNG, 100, outputStream)
+                                    }
+                                    withContext(Dispatchers.Main) {
+                                        Toast.makeText(context, "Frame successfully saved!", Toast.LENGTH_LONG).show()
+                                    }
+                                } catch (e: Exception) {
+                                    withContext(Dispatchers.Main) {
+                                        Toast.makeText(context, "Failed to save frame: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
+                                    }
+                                }
+                            }
+                        }
                     }
-                }, contentPadding = PaddingValues(horizontal = 6.dp)) {
-                    Text("Export", fontSize = 12.sp)
+                    pendingFrameIndex = null
+                }
+
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Button(onClick = onSaveProject, contentPadding = PaddingValues(horizontal = 6.dp)) {
+                        Text("Save", fontSize = 12.sp)
+                    }
+
+                    Button(onClick = {
+                        pendingFrameIndex = currentFrameIndex
+                        saveSingleFrameLauncher.launch("Frame_${currentFrameIndex + 1}.png")
+                    }, contentPadding = PaddingValues(horizontal = 6.dp)) {
+                        Text("Frame", fontSize = 12.sp)
+                    }
+
+                    Button(onClick = {
+                        Toast.makeText(context, "Rendering video...", Toast.LENGTH_SHORT).show()
+                        coroutineScope.launch {
+                            createVideoLauncher.launch("$projectTitle.mp4")
+                        }
+                    }, contentPadding = PaddingValues(horizontal = 6.dp)) {
+                        Text("Export", fontSize = 12.sp)
+                    }
                 }
             }
-        }
 
-        // Layer selection mini-bar with re-ordering controls
-        val currentLayers = frames.getOrNull(currentFrameIndex)?.layers ?: emptyList()
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(Color.Black.copy(alpha = 0.5f))
-                .padding(horizontal = 8.dp, vertical = 4.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text("Layers:", color = Color.White, fontSize = 14.sp)
-            LazyRow(
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                modifier = Modifier.weight(1f),
-                verticalAlignment = Alignment.CenterVertically
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+                contentAlignment = Alignment.Center
             ) {
-                items(currentLayers.size) { layerIndex ->
-                    val isLayerSelected = layerIndex == currentLayerIndex
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(2.dp),
-                        modifier = Modifier
-                            .background(
-                                if (isLayerSelected) Color.Cyan.copy(alpha = 0.2f) else Color.Transparent,
-                                shape = RoundedCornerShape(4.dp)
-                            )
-                            .padding(2.dp)
-                    ) {
-                        if (layerIndex > 0) {
-                            Button(
-                                onClick = { onMoveLayer(layerIndex, layerIndex - 1) },
-                                contentPadding = PaddingValues(2.dp),
-                                modifier = Modifier.size(20.dp)
-                            ) {
-                                Text("<", fontSize = 10.sp)
-                            }
-                        }
-
-                        Button(
-                            onClick = { onSelectLayer(layerIndex) },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (isLayerSelected) Color.Cyan else Color.Gray
-                            ),
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
-                        ) {
-                            Text(currentLayers[layerIndex].name, color = if (isLayerSelected) Color.Black else Color.White, fontSize = 12.sp)
-                        }
-
-                        if (layerIndex < currentLayers.size - 1) {
-                            Button(
-                                onClick = { onMoveLayer(layerIndex, layerIndex + 1) },
-                                contentPadding = PaddingValues(2.dp),
-                                modifier = Modifier.size(20.dp)
-                            ) {
-                                Text(">", fontSize = 10.sp)
-                            }
-                        }
-                    }
-                }
-            }
-            Button(onClick = onAddLayer, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)) {
-                Text("+ Layer", fontSize = 12.sp)
-            }
-        }
-
-        // 2. Drawing Canvas Area with clipping to prevent overbleed
-        Box(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .clipToBounds()
-                .background(Color.White)
-        ) {
-            DrawingCanvas(
-                layers = currentLayers,
-                currentLayerIndex = currentLayerIndex,
-                toolState = toolState,
-                onPathAddedToActiveLayer = onPathAdded,
-                onLayerBitmapUpdated = onLayerBitmapUpdated
-            )
-        }
-
-        // 3. Tool Palette Toolbar
-        PaletteToolbar(
-            toolState = toolState,
-            onToolStateChanged = onToolStateChanged
-        )
-
-        // 4. Timeline / Frame Bar at the bottom with re-ordering controls
-        LazyRow(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(90.dp)
-                .background(Color.Black.copy(alpha = 0.8f)),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            contentPadding = PaddingValues(8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            items(frames.size) { index ->
-                FrameThumbnailItem(
-                    index = index,
-                    totalFrames = frames.size,
-                    isSelected = index == currentFrameIndex,
-                    onClick = { onSelectFrame(index) },
-                    onMoveLeft = { onMoveFrame(index, index - 1) },
-                    onMoveRight = { onMoveFrame(index, index + 1) }
-                )
-            }
-
-            item {
                 Box(
                     modifier = Modifier
-                        .size(70.dp, 74.dp)
-                        .background(Color.Gray, shape = RoundedCornerShape(8.dp))
-                        .clickable { onAddFrame() },
-                    contentAlignment = Alignment.Center
+                        .size(
+                            width = width.dp,
+                            height = height.dp
+                        )
+                        .background(Color(backgroundColorInt))
+                        .clipToBounds()
                 ) {
-                    Text("+", color = Color.White, fontSize = 24.sp)
+                    val activeLayers = frames.getOrNull(currentFrameIndex)?.layers ?: emptyList()
+                    DrawingCanvas(
+                        layers = activeLayers,
+                        currentLayerIndex = currentLayerIndex,
+                        toolState = toolState,
+                        onPathAddedToActiveLayer = onPathAdded,
+                        onLayerBitmapUpdated = onLayerBitmapUpdated
+                    )
+                }
+            }
+
+            PaletteToolbar(
+                toolState = toolState,
+                onToolStateChanged = onToolStateChanged
+            )
+
+            LazyRow(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(90.dp)
+                    .background(Color.Black.copy(alpha = 0.8f)),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                contentPadding = PaddingValues(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                items(frames.size) { index ->
+                    FrameThumbnailItem(
+                        index = index,
+                        totalFrames = frames.size,
+                        isSelected = index == currentFrameIndex,
+                        onClick = { onSelectFrame(index) },
+                        onMoveLeft = { onMoveFrame(index, index - 1) },
+                        onMoveRight = { onMoveFrame(index, index + 1) }
+                    )
+                }
+
+                item {
+                    Box(
+                        modifier = Modifier
+                            .size(70.dp, 74.dp)
+                            .background(Color.Gray, shape = RoundedCornerShape(8.dp))
+                            .clickable { onAddFrame() },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("+", color = Color.White, fontSize = 24.sp)
+                    }
                 }
             }
         }
     }
+}
+
+@Composable
+fun EmbeddedProjectSettingsDialog(
+    projectTitle: String,
+    fps: Int,
+    width: Int,
+    height: Int,
+    backgroundColorInt: Int,
+    onDismiss: () -> Unit,
+    onSave: (String, Int, Int, Int, Int) -> Unit
+) {
+    var title by remember { mutableStateOf(projectTitle) }
+    var fpsText by remember { mutableStateOf(fps.toString()) }
+    var widthText by remember { mutableStateOf(width.toString()) }
+    var heightText by remember { mutableStateOf(height.toString()) }
+
+    val colorOptions = listOf(Color.White, Color.LightGray, Color.DarkGray, Color.Black, Color.Yellow)
+    var selectedColor by remember { mutableStateOf(Color(backgroundColorInt)) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Project Settings") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = title,
+                    onValueChange = { title = it },
+                    label = { Text("Project Title") }
+                )
+                OutlinedTextField(
+                    value = fpsText,
+                    onValueChange = { fpsText = it },
+                    label = { Text("FPS") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                )
+                OutlinedTextField(
+                    value = widthText,
+                    onValueChange = { widthText = it },
+                    label = { Text("Width (dp)") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                )
+                OutlinedTextField(
+                    value = heightText,
+                    onValueChange = { heightText = it },
+                    label = { Text("Height (dp)") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                )
+
+                Spacer(modifier = Modifier.height(4.dp))
+                Text("Background Color", fontSize = 14.sp, color = Color.White)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    colorOptions.forEach { color ->
+                        val isSelected = color == selectedColor
+                        Box(
+                            modifier = Modifier
+                                .size(32.dp)
+                                .clip(CircleShape)
+                                .background(color)
+                                .border(
+                                    width = if (isSelected) 2.dp else 1.dp,
+                                    color = if (isSelected) Color.Cyan else Color.Gray,
+                                    shape = CircleShape
+                                )
+                                .clickable { selectedColor = color }
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = {
+                val newFps = fpsText.toIntOrNull() ?: fps
+                val newWidth = widthText.toIntOrNull() ?: width
+                val newHeight = heightText.toIntOrNull() ?: height
+                val newColorInt = selectedColor.toArgb()
+
+                onSave(title, newFps, newWidth, newHeight, newColorInt)
+            }) {
+                Text("Save")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
 }
 
 @Composable
