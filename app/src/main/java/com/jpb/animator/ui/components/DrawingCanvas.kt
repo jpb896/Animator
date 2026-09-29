@@ -17,20 +17,21 @@ import androidx.compose.ui.graphics.drawscope.Fill
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
+import com.jpb.animator.GlobalAppSettings
 import com.jpb.animator.utils.DrawStyle
 import com.jpb.animator.utils.DrawingToolState
 import com.jpb.animator.utils.FloodFillUtils
 import com.jpb.animator.utils.Layer
 import com.jpb.animator.utils.StyledPath
 import com.jpb.animator.utils.ToolType
-import androidx.core.graphics.get
-import androidx.core.graphics.createBitmap
 
 @Composable
 fun DrawingCanvas(
     layers: List<Layer>,
+    previousLayers: List<Layer>?, // Added to support onion skinning from the previous frame
     currentLayerIndex: Int,
     toolState: DrawingToolState,
+    globalSettings: GlobalAppSettings, // Added to check if onion skinning is active
     onPathAddedToActiveLayer: (StyledPath) -> Unit,
     onLayerBitmapUpdated: ((Bitmap) -> Unit)? = null
 ) {
@@ -38,7 +39,7 @@ fun DrawingCanvas(
     var currentPoints by remember { mutableStateOf<MutableList<Offset>>(mutableListOf()) }
 
     var activeColor by remember { mutableStateOf(Color.Black) }
-    var activeStrokeWidth by remember { mutableFloatStateOf(8f) }
+    var activeStrokeWidth by remember { mutableStateOf(8f) }
     var activeDrawStyle by remember { mutableStateOf(DrawStyle.STROKE) }
 
     val currentLayer = layers.getOrNull(currentLayerIndex)
@@ -50,23 +51,19 @@ fun DrawingCanvas(
                 if (toolState.toolType == ToolType.FLOODFILL) {
                     detectTapGestures(
                         onTap = { offset ->
-                            val bitmapWidth = size.width
-                            val bitmapHeight = size.height
+                            val bitmapWidth = size.width.toInt()
+                            val bitmapHeight = size.height.toInt()
                             if (bitmapWidth <= 0 || bitmapHeight <= 0) return@detectTapGestures
 
-                            // 1. Create a mutable bitmap representing the exact visual layout
-                            val mutableBmp = createBitmap(bitmapWidth, bitmapHeight)
+                            val mutableBmp = Bitmap.createBitmap(bitmapWidth, bitmapHeight, Bitmap.Config.ARGB_8888)
                             val androidCanvas = android.graphics.Canvas(mutableBmp)
 
-                            // 2. Draw canvas background
                             androidCanvas.drawColor(android.graphics.Color.WHITE)
 
-                            // 3. Draw existing layer bitmap content if present
                             currentLayer?.rasterBitmap?.let { existingBmp ->
                                 androidCanvas.drawBitmap(existingBmp, 0f, 0f, null)
                             }
 
-                            // 4. Draw all vector paths onto the bitmap so they act as fill boundaries
                             currentLayer?.paths?.forEach { styledPath ->
                                 val paint = android.graphics.Paint().apply {
                                     isAntiAlias = true
@@ -85,10 +82,9 @@ fun DrawingCanvas(
                             val startX = offset.x.toInt().coerceIn(0, bitmapWidth - 1)
                             val startY = offset.y.toInt().coerceIn(0, bitmapHeight - 1)
 
-                            val targetColor = mutableBmp[startX, startY]
+                            val targetColor = mutableBmp.getPixel(startX, startY)
                             val replacementColor = toolState.currentColor.toArgb()
 
-                            // 5. Execute flood fill bounded by paths and canvas edges
                             val filledBitmap = FloodFillUtils.floodFill(
                                 bitmap = mutableBmp,
                                 startX = startX,
@@ -97,7 +93,6 @@ fun DrawingCanvas(
                                 replacementColor = replacementColor
                             )
 
-                            // 6. Update layer raster bitmap state
                             onLayerBitmapUpdated?.invoke(filledBitmap)
                         }
                     )
@@ -158,7 +153,29 @@ fun DrawingCanvas(
         // Draw background
         drawRect(color = Color.White)
 
-        // Draw all layers in order (bottom to top) if they are visible
+        // 1. Render Onion-Skinning Ghost of Previous Frame if enabled
+        if (globalSettings.isOnionSkinningEnabled && previousLayers != null) {
+            val alpha = globalSettings.onionSkinOpacity
+            previousLayers.forEach { layer ->
+                if (layer.isVisible) {
+                    layer.rasterBitmap?.let { bmp ->
+                        drawImage(image = bmp.asImageBitmap(), alpha = alpha)
+                    }
+                    layer.paths.forEach { styledPath ->
+                        drawPath(
+                            path = styledPath.path,
+                            color = styledPath.color.copy(alpha = styledPath.color.alpha * alpha),
+                            style = if (styledPath.drawStyle == DrawStyle.FILL) Fill else Stroke(
+                                width = styledPath.strokeWidth,
+                                cap = StrokeCap.Round
+                            )
+                        )
+                    }
+                }
+            }
+        }
+
+        // 2. Draw current frame layers normally on top
         layers.forEach { layer ->
             if (layer.isVisible) {
                 layer.rasterBitmap?.let { bmp ->
@@ -177,7 +194,7 @@ fun DrawingCanvas(
             }
         }
 
-        // Draw the active stroke preview in real time on the current layer
+        // Draw active stroke preview
         currentPath?.let { path ->
             drawPath(
                 path = path,

@@ -22,6 +22,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -43,6 +44,7 @@ import com.jpb.animator.utils.DrawingToolState
 import com.jpb.animator.utils.Layer
 import com.jpb.animator.utils.ProjectManager
 import com.jpb.animator.utils.StyledPath
+import com.jpb.animator.utils.duplicateCurrentFrame
 import com.jpb.animator.utils.exportAnimationNative
 import com.jpb.animator.utils.renderFrameToBitmap
 import com.jpb.animator.utils.swap
@@ -50,6 +52,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+
+data class GlobalAppSettings(
+    val isOnionSkinningEnabled: Boolean = false,
+    val onionSkinOpacity: Float = 0.3f
+)
 
 sealed class AppScreen {
     object Home : AppScreen()
@@ -192,6 +199,7 @@ fun EditorFlow(
     var canvasWidth by remember { mutableIntStateOf(400) }
     var canvasHeight by remember { mutableIntStateOf(400) }
     var backgroundColorInt by remember { mutableIntStateOf(Color.White.toArgb()) }
+    var globalSettings by remember { mutableStateOf(GlobalAppSettings()) }
 
     var currentFrameIndex by remember { mutableIntStateOf(0) }
     var currentLayerIndex by remember { mutableIntStateOf(0) }
@@ -225,15 +233,17 @@ fun EditorFlow(
         currentFrameIndex = currentFrameIndex,
         currentLayerIndex = currentLayerIndex,
         toolState = toolState,
+        globalSettings = globalSettings,
         showSettingsDialog = showSettingsDialog,
         onToggleSettingsDialog = { showSettingsDialog = it },
         onToolStateChanged = { newToolState -> toolState = newToolState },
-        onUpdateProjectSettings = { newTitle, newFps, newWidth, newHeight, newColorInt ->
+        onUpdateProjectSettings = { newTitle, newFps, newWidth, newHeight, newColorInt, newGlobalSettings ->
             projectTitle = newTitle
             fps = newFps
             canvasWidth = newWidth
             canvasHeight = newHeight
             backgroundColorInt = newColorInt
+            globalSettings = newGlobalSettings
         },
         onBack = {
             ProjectManager.saveProject(context, projectId, frames)
@@ -274,6 +284,14 @@ fun EditorFlow(
             frames = mutableFrames
             currentFrameIndex = frames.size - 1
             currentLayerIndex = 0
+        },
+        onDuplicateFrame = {
+            val updatedFrames = duplicateCurrentFrame(frames, currentFrameIndex)
+            if (updatedFrames != frames) {
+                frames = updatedFrames
+                currentFrameIndex += 1
+                currentLayerIndex = 0
+            }
         },
         onSelectFrame = { index ->
             currentFrameIndex = index
@@ -324,15 +342,17 @@ fun EditorScreen(
     currentFrameIndex: Int,
     currentLayerIndex: Int,
     toolState: DrawingToolState,
+    globalSettings: GlobalAppSettings,
     showSettingsDialog: Boolean,
     onToggleSettingsDialog: (Boolean) -> Unit,
     onToolStateChanged: (DrawingToolState) -> Unit,
-    onUpdateProjectSettings: (String, Int, Int, Int, Int) -> Unit,
+    onUpdateProjectSettings: (String, Int, Int, Int, Int, GlobalAppSettings) -> Unit,
     onBack: () -> Unit,
     onSaveProject: () -> Unit,
     onPathAdded: (StyledPath) -> Unit,
     onLayerBitmapUpdated: (Bitmap) -> Unit,
     onAddFrame: () -> Unit,
+    onDuplicateFrame: () -> Unit,
     onSelectFrame: (Int) -> Unit,
     onMoveFrame: (Int, Int) -> Unit,
     onAddLayer: () -> Unit,
@@ -348,12 +368,11 @@ fun EditorScreen(
             width = width,
             height = height,
             backgroundColorInt = backgroundColorInt,
+            globalSettings = globalSettings,
             onDismiss = { onToggleSettingsDialog(false) },
-            onSave = { updatedTitle, updatedFps, updatedWidth, updatedHeight, updatedColorInt ->
-                // 1. Update live editor state
-                onUpdateProjectSettings(updatedTitle, updatedFps, updatedWidth, updatedHeight, updatedColorInt)
+            onSave = { updatedTitle, updatedFps, updatedWidth, updatedHeight, updatedColorInt, updatedGlobalSettings ->
+                onUpdateProjectSettings(updatedTitle, updatedFps, updatedWidth, updatedHeight, updatedColorInt, updatedGlobalSettings)
 
-                // 2. Persist to disk immediately
                 ProjectManager.saveProjectMetadata(
                     context = context,
                     projectId = projectId,
@@ -364,7 +383,6 @@ fun EditorScreen(
                     bgColor = updatedColorInt
                 )
 
-                // 3. Close dialog
                 onToggleSettingsDialog(false)
             }
         )
@@ -575,10 +593,14 @@ fun EditorScreen(
                         .clipToBounds()
                 ) {
                     val activeLayers = frames.getOrNull(currentFrameIndex)?.layers ?: emptyList()
+                    val previousLayers = if (currentFrameIndex > 0) frames.getOrNull(currentFrameIndex - 1)?.layers else null
+
                     DrawingCanvas(
                         layers = activeLayers,
+                        previousLayers = previousLayers,
                         currentLayerIndex = currentLayerIndex,
                         toolState = toolState,
+                        globalSettings = globalSettings,
                         onPathAddedToActiveLayer = onPathAdded,
                         onLayerBitmapUpdated = onLayerBitmapUpdated
                     )
@@ -611,14 +633,26 @@ fun EditorScreen(
                 }
 
                 item {
-                    Box(
-                        modifier = Modifier
-                            .size(70.dp, 74.dp)
-                            .background(Color.Gray, shape = RoundedCornerShape(8.dp))
-                            .clickable { onAddFrame() },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text("+", color = Color.White, fontSize = 24.sp)
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Box(
+                            modifier = Modifier
+                                .size(70.dp, 74.dp)
+                                .background(Color.Gray, shape = RoundedCornerShape(8.dp))
+                                .clickable { onAddFrame() },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text("+", color = Color.White, fontSize = 24.sp)
+                        }
+
+                        Box(
+                            modifier = Modifier
+                                .size(70.dp, 74.dp)
+                                .background(Color.DarkGray, shape = RoundedCornerShape(8.dp))
+                                .clickable { onDuplicateFrame() },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(Icons.Default.ContentCopy, contentDescription = "Duplicate Frame", tint = Color.White)
+                        }
                     }
                 }
             }
@@ -633,13 +667,15 @@ fun EmbeddedProjectSettingsDialog(
     width: Int,
     height: Int,
     backgroundColorInt: Int,
+    globalSettings: GlobalAppSettings,
     onDismiss: () -> Unit,
-    onSave: (String, Int, Int, Int, Int) -> Unit
+    onSave: (String, Int, Int, Int, Int, GlobalAppSettings) -> Unit
 ) {
     var title by remember { mutableStateOf(projectTitle) }
     var fpsText by remember { mutableStateOf(fps.toString()) }
     var widthText by remember { mutableStateOf(width.toString()) }
     var heightText by remember { mutableStateOf(height.toString()) }
+    var onionSkinningEnabled by remember { mutableStateOf(globalSettings.isOnionSkinningEnabled) }
 
     val colorOptions = listOf(Color.White, Color.LightGray, Color.DarkGray, Color.Black, Color.Yellow)
     var selectedColor by remember { mutableStateOf(Color(backgroundColorInt)) }
@@ -674,6 +710,19 @@ fun EmbeddedProjectSettingsDialog(
                 )
 
                 Spacer(modifier = Modifier.height(4.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Enable Onion-Skinning", fontSize = 14.sp, color = Color.White)
+                    Switch(
+                        checked = onionSkinningEnabled,
+                        onCheckedChange = { onionSkinningEnabled = it }
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(4.dp))
                 Text("Background Color", fontSize = 14.sp, color = Color.White)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -703,8 +752,9 @@ fun EmbeddedProjectSettingsDialog(
                 val newWidth = widthText.toIntOrNull() ?: width
                 val newHeight = heightText.toIntOrNull() ?: height
                 val newColorInt = selectedColor.toArgb()
+                val newGlobalSettings = globalSettings.copy(isOnionSkinningEnabled = onionSkinningEnabled)
 
-                onSave(title, newFps, newWidth, newHeight, newColorInt)
+                onSave(title, newFps, newWidth, newHeight, newColorInt, newGlobalSettings)
             }) {
                 Text("Save")
             }
